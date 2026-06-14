@@ -87,8 +87,19 @@ LaWAM always needs:
 - Base VLM:
   [Qwen/Qwen3-VL-2B-Instruct](https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct)
 - LaWM/LAM checkpoint and config:
-  download them from the LaWAM release assets on
-  [Hugging Face](https://huggingface.co/)
+  [lawam_lam](https://huggingface.co/jialei02/lawam_lam)
+
+Downloadable resources used by the released configs:
+
+| Type | Resource | Used for | Local path expected by examples/configs |
+| --- | --- | --- | --- |
+| Base VLM weights | [Qwen/Qwen3-VL-2B-Instruct](https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct) | Training and inference | `results/Checkpoints/qwen3_weights` |
+| LAM checkpoint/config | [lawam_lam](https://huggingface.co/jialei02/lawam_lam) | Training and inference | `latent_action_model/logs/dino_large_vae/lam_release` |
+| LaWAM pretraining checkpoint | [lawam_pretrain](https://huggingface.co/jialei02/lawam_pretrain) | LIBERO/RoboTwin SFT initialization | `results/Checkpoints/pretrain/lawam_pretrain` |
+| LIBERO SFT checkpoint | [lawam_libero_sft_release](https://huggingface.co/jialei02/lawam_libero_sft_release) | LIBERO benchmark inference | `results/Checkpoints/libero/lawam_libero_sft_release` |
+| RoboTwin SFT checkpoint | [lawam_robotwin_sft_release](https://huggingface.co/jialei02/lawam_robotwin_sft_release) | RoboTwin evaluation | `results/Checkpoints/robotwin/lawam_robotwin_sft_release` |
+| LIBERO SFT dataset | [libero_merged_no_noops_20hz](https://huggingface.co/datasets/jialei02/libero_merged_no_noops_20hz) | LIBERO SFT | `dataset/libero_merged_no_noops_20hz` |
+| RoboTwin SFT dataset | [robotwin_merged](https://huggingface.co/datasets/jialei02/robotwin_merged) | RoboTwin SFT | `dataset/robotwin_merged` |
 
 Download Qwen3-VL into the path recorded by the provided configs:
 
@@ -150,8 +161,8 @@ pip install mujoco==3.3.2
 #### 2. Run LIBERO Benchmark
 
 Set the policy checkpoint path. Use a released LIBERO checkpoint if available
-under [jialei02](https://huggingface.co/jialei02), or a checkpoint produced by
-[LIBERO SFT](#libero-sft).
+from [lawam_libero_sft_release](https://huggingface.co/jialei02/lawam_libero_sft_release),
+or a checkpoint produced by [LIBERO SFT](#libero-sft).
 
 ```bash
 cd LaWAM
@@ -293,7 +304,7 @@ SFT training uses the same Qwen3-VL and LAM files prepared in
 [Model Preparation](#model-preparation). It also needs:
 
 - LaWAM pretraining checkpoint:
-  [jialei02/lawam_pretrain](https://huggingface.co/jialei02/lawam_pretrain)
+  [lawam_pretrain](https://huggingface.co/jialei02/lawam_pretrain)
 - benchmark-specific SFT data
 
 Download the pretraining checkpoint:
@@ -316,7 +327,7 @@ are forwarded to OmegaConf, so config fields can be overridden with
 
 The preprocessed LIBERO SFT dataset is available at:
 
-https://huggingface.co/datasets/jialei02/libero_merged_no_noops_20hz/tree/main
+[libero_merged_no_noops_20hz](https://huggingface.co/datasets/jialei02/libero_merged_no_noops_20hz)
 
 This dataset is derived from the public
 [IPEC-COMMUNITY/libero-benchmark-dataset](https://huggingface.co/collections/IPEC-COMMUNITY/libero-benchmark-dataset)
@@ -369,7 +380,7 @@ results/Checkpoints/libero/<timestamp>+<run_id>/
 
 The preprocessed RoboTwin SFT dataset is available at:
 
-https://huggingface.co/datasets/jialei02/robotwin_merged
+[robotwin_merged](https://huggingface.co/datasets/jialei02/robotwin_merged)
 
 This dataset uses RoboTwin EEF actions and is derived from the lingbot-va
 release, specifically
