@@ -28,6 +28,7 @@ LaWAM policy training with latent visual subgoals.
   - [LIBERO](#libero-sft)
   - [RoboTwin](#robotwin-sft)
 - [Checkpoint Notes](#checkpoint-notes)
+- [Citation](#citation)
 - [Acknowledgements](#acknowledgements)
 
 ## File Structure
@@ -463,6 +464,19 @@ are valid in the new environment.
 - `framework.action_model.lam_ckpt_path` and
   `framework.action_model.lam_yaml_path` must point to a matching LAM checkpoint
   and YAML config.
+
+## Citation
+
+```bibtex
+@misc{chen2026lawam,
+  title = {LaWAM: Latent World Action Models for Efficient Dynamics-Aware Robot Policies},
+  author = {Chen, Jialei and Wang, Kai and Chen, Kang and Chen, Shuaihang and Gao, Feng and Tang, Wenhao and Li, Zhiyuan and Liu, Weilin and Yao, Zhuyu and Li, Boxun and Xu, Yuanbo and Yu, Chao},
+  journal = {arXiv preprint arXiv:2606.15768},
+  year = {2026},
+  archiveprefix = {arXiv},
+  primaryclass = {cs.RO},
+}
+```
 
 ## Acknowledgements
 
