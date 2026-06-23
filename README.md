@@ -56,7 +56,7 @@ Clone the repository into a directory named `LaWAM`, then create the
 policy/training environment from that repository root:
 
 ```bash
-git clone https://github.com/Nemo-1024/LaWAM.git LaWAM
+git clone https://github.com/RLinf/LaWAM.git LaWAM
 cd LaWAM
 
 conda create -n lawam python=3.10 -y
