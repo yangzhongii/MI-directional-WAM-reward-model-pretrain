@@ -127,6 +127,13 @@ def build_bridge_command(
     port: int,
     seed: int,
 ) -> list[str]:
+    optional_env_args = (
+        ("UNNORM_KEY", "--unnorm_key"),
+        ("ROBOTWIN_REPLAN_STEPS", "--replan_steps"),
+        ("ROBOTWIN_ACTION_ENSEMBLE", "--action_ensemble"),
+        ("ROBOTWIN_ACTION_ENSEMBLE_ALPHA", "--action_ensemble_alpha"),
+        ("ACTION_REORDER", "--action_reorder"),
+    )
     command = [
         resolve_robotwin_python(),
         str(SCRIPT_DIR / "robotwin_batch_bridge.py"),
@@ -150,8 +157,10 @@ def build_bridge_command(
         "--policy_ckpt_path",
         ckpt_path,
     ]
-    if os.getenv("UNNORM_KEY"):
-        command.extend(["--unnorm_key", os.environ["UNNORM_KEY"]])
+    for env_name, arg_name in optional_env_args:
+        env_value = os.getenv(env_name)
+        if env_value:
+            command.extend([arg_name, env_value])
     return command
 
 

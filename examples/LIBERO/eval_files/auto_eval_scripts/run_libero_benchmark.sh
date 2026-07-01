@@ -8,7 +8,7 @@ REPO_ROOT="$(libero_repo_root)"
 cd "${REPO_ROOT}"
 
 SCRIPT_PATH="${SCRIPT_DIR}/run_libero_suite_benchmark.sh"
-DEFAULT_CKPT="results/Checkpoints/libero/20260506_200623+libero_4in1_new_pretrain_detach_distill_b32rp2_25k/final_model/pytorch_model.pt"
+DEFAULT_CKPT="results/Checkpoints/libero/lawam_libero_sft_release/final_model/pytorch_model.pt"
 
 your_ckpt="${1:-${CKPT_PATH:-${DEFAULT_CKPT}}}"
 run_index_base="${2:-${RUN_INDEX_BASE:-0}}"

@@ -94,7 +94,7 @@ def build_save_dir(usr_args: dict[str, Any], current_time: str) -> Path:
             "ROBOTWIN_EVAL_ROOT",
             "results/eval_runs/robotwin",
         )
-    ).expanduser()
+    ).expanduser().resolve()
     ckpt_alias = derive_ckpt_alias(usr_args["policy_ckpt_path"])
     run_group = build_run_group(ckpt_alias, str(usr_args["task_config"]))
     run_tag = build_run_tag(current_time)

@@ -93,6 +93,8 @@ LaWAM always needs:
 
 - Base VLM:
   [Qwen/Qwen3-VL-2B-Instruct](https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct)
+- LAM vision encoder:
+  [facebook/dinov3-vitb16-pretrain-lvd1689m](https://huggingface.co/facebook/dinov3-vitb16-pretrain-lvd1689m)
 - LaWM/LAM checkpoint and config:
   [lawam_lam](https://huggingface.co/jialei02/lawam_lam)
 
@@ -101,6 +103,7 @@ Downloadable resources used by the released configs:
 | Type | Resource | Used for | Local path expected by examples/configs |
 | --- | --- | --- | --- |
 | Base VLM weights | [Qwen/Qwen3-VL-2B-Instruct](https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct) | Training and inference | `results/Checkpoints/qwen3_weights` |
+| DINOv3 vision encoder weights | [facebook/dinov3-vitb16-pretrain-lvd1689m](https://huggingface.co/facebook/dinov3-vitb16-pretrain-lvd1689m) | LAM feature extraction | `weights/dinov3-vitb16-pretrain-lvd1689m` |
 | LAM checkpoint/config | [lawam_lam](https://huggingface.co/jialei02/lawam_lam) | Training and inference | `latent_action_model/logs/dino_large_vae/lam_release` |
 | LaWAM pretraining checkpoint | [lawam_pretrain](https://huggingface.co/jialei02/lawam_pretrain) | LIBERO/RoboTwin SFT initialization | `results/Checkpoints/pretrain/lawam_pretrain` |
 | LIBERO SFT checkpoint | [lawam_libero_sft_release](https://huggingface.co/jialei02/lawam_libero_sft_release) | LIBERO benchmark inference | `results/Checkpoints/libero/lawam_libero_sft_release` |
@@ -117,6 +120,15 @@ hf download Qwen/Qwen3-VL-2B-Instruct \
   --local-dir results/Checkpoints/qwen3_weights
 ```
 
+Download DINOv3 into the path used by the LAM YAML config:
+
+```bash
+mkdir -p weights/dinov3-vitb16-pretrain-lvd1689m
+
+hf download facebook/dinov3-vitb16-pretrain-lvd1689m \
+  --local-dir weights/dinov3-vitb16-pretrain-lvd1689m
+```
+
 Download the LaWM/LAM checkpoint and YAML config into the paths recorded by the
 provided configs:
 
@@ -125,8 +137,15 @@ hf download jialei02/lawam_lam \
   --local-dir latent_action_model/logs/dino_large_vae/lam_release
 ```
 
-The policy server loads Qwen3-VL and LAM from the checkpoint config. The
-released configs already point to the paths above.
+The policy server loads Qwen3-VL and LAM from the checkpoint config, then the
+LAM YAML loads DINOv3 through `model.vision_model_id`. If your downloaded LAM
+YAML still points to a Hugging Face model id or an unavailable absolute path,
+set it to:
+
+```yaml
+model:
+  vision_model_id: weights/dinov3-vitb16-pretrain-lvd1689m
+```
 
 ## Inference
 
@@ -239,62 +258,35 @@ pip install \
 
 #### 2. Run RoboTwin Evaluation
 
-Native policy mode imports the policy adapter directly from this repository:
+Use the auto evaluation entrypoint for RoboTwin runs. It starts the LaWAM
+policy server, launches RoboTwin workers, and writes a resumable run directory.
 
 ```bash
 cd LaWAM
+conda activate lawam
 
 export ROBOTWIN_PATH=/path/to/RoboTwin
 export ROBOTWIN_PYTHON=/path/to/robotwin_env/bin/python
-export ROBOTWIN_SKIP_GET_OBS_WITHIN_REPLAN=1
-export ROBOTWIN_REPLAN_STEPS=8
 
 hf download jialei02/lawam_robotwin_sft_release \
   --local-dir results/Checkpoints/robotwin/lawam_robotwin_sft_release
 
-bash examples/Robotwin/eval_files/eval_direct.sh \
-  lift_pot \
-  demo_clean \
+# Single-task smoke test.
+ROBOTWIN_TASKS=lift_pot \
+bash examples/Robotwin/eval_files/auto_eval_scripts/auto_eval_robotwin.sh \
   results/Checkpoints/robotwin/lawam_robotwin_sft_release/final_model/pytorch_model.pt \
-  lawam_robotwin_sft \
-  0 \
-  0
-```
-
-Bridge mode starts a LaWAM websocket policy server plus a RoboTwin bridge
-process:
-
-```bash
-cd LaWAM
-
-export ROBOTWIN_PATH=/path/to/RoboTwin
-export ROBOTWIN_PYTHON=/path/to/robotwin_env/bin/python
-export STAR_VLA_PYTHON=/path/to/lawam_env/bin/python
-export POLICY_CKPT_PATH=results/Checkpoints/robotwin/lawam_robotwin_sft_release/final_model/pytorch_model.pt
-
-# Terminal 1: policy server
-bash examples/Robotwin/eval_files/run_policy_server.sh "$POLICY_CKPT_PATH" 0 6694
-
-# Terminal 2: RoboTwin bridge and simulator
-PORT=6694 ROBOTWIN_NUM_SLOTS=4 ROBOTWIN_REPLAN_STEPS=8 \
-bash examples/Robotwin/eval_files/eval.sh lift_pot demo_clean lawam_robotwin_sft 0 0
+  demo_clean
 ```
 
 Full RoboTwin benchmark:
 
 ```bash
 cd LaWAM
+conda activate lawam
 
 export ROBOTWIN_PATH=/path/to/RoboTwin
 export ROBOTWIN_PYTHON=/path/to/robotwin_env/bin/python
-export STAR_VLA_PYTHON=/path/to/lawam_env/bin/python
 
-GPU_IDS="0 1 2 3 4 5 6 7" \
-NUM_WORKERS=8 \
-ROBOTWIN_NUM_SLOTS=2 \
-ROBOTWIN_TEST_NUM=100 \
-ROBOTWIN_SKIP_GET_OBS_WITHIN_REPLAN=1 \
-ROBOTWIN_REPLAN_STEPS=8 \
 ROBOTWIN_EVAL_ROOT=results/eval_runs/robotwin \
 bash examples/Robotwin/eval_files/auto_eval_scripts/auto_eval_robotwin.sh \
   results/Checkpoints/robotwin/lawam_robotwin_sft_release/final_model/pytorch_model.pt \
