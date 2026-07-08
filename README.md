@@ -364,10 +364,7 @@ dataset/
 cd LaWAM
 conda activate lawam
 
-CONFIG=starVLA/config/training/starvla_train_libero_pre_detach_distill.yaml
-
 bash train_lawam.sh \
-  --config_yaml "$CONFIG" \
   --run_id libero_sft_from_pretrain
 ```
 
@@ -391,9 +388,8 @@ release, specifically
 Compared with that public source, this release converts the data to LeRobot 3.0
 format.
 
-The provided RoboTwin SFT config uses `data_mix: robotwin_eef_30hz`, which
-expects a dataset directory named `robotwin_eef_all_v30_merged_slow30fps`.
-Download the dataset and create that name if needed:
+The provided RoboTwin SFT config uses `data_mix: robotwin_merged`, so download
+the dataset under `dataset/robotwin_merged`:
 
 ```bash
 mkdir -p dataset
@@ -401,8 +397,6 @@ mkdir -p dataset
 hf download jialei02/robotwin_merged \
   --repo-type dataset \
   --local-dir dataset/robotwin_merged
-
-ln -sfn robotwin_merged dataset/robotwin_eef_all_v30_merged_slow30fps
 ```
 
 Expected layout:
@@ -413,7 +407,6 @@ dataset/
     meta/
     data/
     videos/
-  robotwin_eef_all_v30_merged_slow30fps -> robotwin_merged
 ```
 
 #### 2. Launch RoboTwin SFT
@@ -422,10 +415,8 @@ dataset/
 cd LaWAM
 conda activate lawam
 
-CONFIG=starVLA/config/training/starvla_train_robotwin_eef_pretrain.yaml
-
 bash train_lawam.sh \
-  --config_yaml "$CONFIG" \
+  starVLA/config/training/train_robotwin.yaml \
   --run_id robotwin_sft_from_pretrain
 ```
 
@@ -441,7 +432,7 @@ same config:
 ```bash
 NNODES=2 NODE_RANK=0 MASTER_ADDR=<rank0_host> MASTER_PORT=29500 \
 bash train_lawam_distributed.sh \
-  --config_yaml "$CONFIG"
+  starVLA/config/training/train_robotwin.yaml
 ```
 
 Run the same command on every node and set `NODE_RANK` accordingly.
@@ -456,7 +447,7 @@ are valid in the new environment.
 
 - LIBERO checkpoints should use `datasets.vla_data.data_mix: libero`.
 - RoboTwin EEF checkpoints should use `datasets.vla_data.data_mix:
-  robotwin_eef_30hz` or another supported RoboTwin EEF mixture.
+  robotwin_merged` or another supported RoboTwin EEF mixture.
 - `framework.qwenvl.base_vlm` must point to Qwen3-VL-2B-Instruct or a local
   copy of that model.
 - `framework.action_model.lam_ckpt_path` and

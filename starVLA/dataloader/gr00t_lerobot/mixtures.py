@@ -101,6 +101,9 @@ DATASET_NAMED_MIXTURES = {
     "robotwin_eef_30hz": [
         ("robotwin_eef_all_v30_merged_slow30fps", 1.0, "robotwin_eef"),
     ],
+    "robotwin_merged": [
+        ("robotwin_merged", 1.0, "robotwin_eef"),
+    ],
     "humanoid_merged_v30_robotwin_eef": [
         ("humanoid_merged_v30_robotwin_eef_state_t3", 1.0, "robotwin_eef"),
     ],

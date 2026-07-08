@@ -53,7 +53,7 @@ framework:
 datasets:
   vla_data:
     data_root_dir: dataset
-    data_mix: robotwin_eef_30hz
+    data_mix: robotwin_merged
     image_resolution: 256
     per_device_batch_size: 16
     video_backend: pyav

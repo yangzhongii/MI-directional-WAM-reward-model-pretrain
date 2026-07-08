@@ -13,7 +13,7 @@ DEFAULT_DATASET_ROOT="$(cd "${REPO_ROOT}/../.." && pwd)/datasets"
 DATASET_ROOT_DIR="${DATASET_ROOT_DIR:-${DEFAULT_DATASET_ROOT}}"
 
 # ---------------------- Default configuration ----------------------
-DEFAULT_CONFIG_YAML="starVLA/config/training/starvla_train_libero.yaml"
+DEFAULT_CONFIG_YAML="starVLA/config/training/train_libero.yaml"
 DEFAULT_ACCELERATE_CONFIG="starVLA/config/accelerate/ddp_bf16.yaml"
 
 CONFIG_YAML="${CONFIG_YAML:-${DEFAULT_CONFIG_YAML}}"
