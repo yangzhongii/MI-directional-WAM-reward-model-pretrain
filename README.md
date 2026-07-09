@@ -411,6 +411,19 @@ dataset/
 
 #### 2. Launch RoboTwin SFT
 
+Important RoboTwin SFT settings:
+
+- Reproducing the paper results requires a global batch size of 1024. The
+  effective global batch size is
+  `per_device_batch_size * total_num_gpus * gradient_accumulation_steps`.
+  Adjust `datasets.vla_data.per_device_batch_size` in
+  `starVLA/config/training/train_robotwin.yaml` for your GPU memory and GPU
+  count. If you do not have enough GPUs, increase
+  `trainer.gradient_accumulation_steps` to keep the global batch size at 1024.
+- For debugging, a 30k-step RoboTwin SFT run is usually enough to reach around
+  80% of the reported performance. You can set
+  `--trainer.max_train_steps 30000` for a shorter debug run.
+
 ```bash
 cd LaWAM
 conda activate lawam
