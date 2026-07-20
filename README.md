@@ -37,6 +37,7 @@ LaWAM policy training with latent visual subgoals.
 - [SFT Training](#sft-training)
   - [LIBERO](#libero-sft)
   - [RoboTwin](#robotwin-sft)
+- [MI Reward Pretraining](#mi-reward-pretraining)
 - [Checkpoint Notes](#checkpoint-notes)
 - [Citation](#citation)
 - [Acknowledgements](#acknowledgements)
@@ -53,6 +54,106 @@ requirements.txt         LaWAM-side Python dependencies
 train_lawam.sh
 train_lawam_distributed.sh
 ```
+
+## MI Reward Pretraining
+
+The `mi_reward/` package is a standalone module for MI-directional reward
+pretraining from world-model generated futures. It does not modify the LaWAM
+policy training loop. The MVP pipeline:
+
+1. caches trajectory and success-reference features,
+2. scores generated futures by MI-potential growth toward success references,
+3. converts top-vs-bottom scored trajectories into preference pairs, and
+4. trains a small trajectory reward head with pairwise ranking SFT.
+
+Expected JSONL inputs:
+
+```json
+{"traj_id": "task_a/generated_0001", "task": "task_a", "frames": ["frames/0.png"], "source": "world_model", "split": "train"}
+{"ref_id": "task_a/success_0001", "task": "task_a", "frames": ["success/0.png"]}
+{"task": "task_a", "chosen_traj_id": "task_a/good", "rejected_traj_id": "task_a/bad", "chosen_score": 0.4, "rejected_score": 0.1, "score_type": "mi_delta"}
+```
+
+Run the synthetic smoke test:
+
+```bash
+python -m pytest tests/test_mi_reward_smoke.py
+```
+
+Run on real generated trajectories:
+
+```bash
+python -m mi_reward.data.build_manifest \
+  --source_type libero \
+  --run_dir results/eval_runs/libero/<ckpt_alias>/<run_tag> \
+  --output dataset/mi_reward/manifests/libero_manifest.jsonl \
+  --fps 2.0
+
+python -m mi_reward.data.build_manifest \
+  --source_type robotwin \
+  --run_dir results/eval_runs/robotwin/<ckpt_alias>__<task_config>/<run_tag> \
+  --output dataset/mi_reward/manifests/robotwin_manifest.jsonl \
+  --fps 2.0
+
+python -m mi_reward.features.cached_feature_store \
+  --manifest dataset/mi_reward/manifests/train_manifest.jsonl \
+  --success_refs dataset/mi_reward/manifests/success_refs.jsonl \
+  --feature_root dataset/mi_reward/features \
+  --feature_extractor lawam_lam \
+  --lam_config_path latent_action_model/logs/dino_large_vae/lam_release/dino_large_vae.yaml \
+  --lam_ckpt_path latent_action_model/logs/dino_large_vae/lam_release/checkpoints/pytorch_model.pt \
+  --vision_model_id /path/to/local/dino_or_vjepa_weights
+
+python -m mi_reward.scoring.build_preferences \
+  --manifest dataset/mi_reward/manifests/train_manifest.jsonl \
+  --success_refs dataset/mi_reward/manifests/success_refs.jsonl \
+  --feature_root dataset/mi_reward/features \
+  --output dataset/mi_reward/preferences/train_preferences.jsonl \
+  --gamma 0.99 \
+  --margin 0.05 \
+  --top_k 5 \
+  --bottom_k 5
+
+python -m mi_reward.training.train_reward_sft \
+  --preferences dataset/mi_reward/preferences/train_preferences.jsonl \
+  --feature_root dataset/mi_reward/features \
+  --output_dir results/mi_reward/reward_head_mvp \
+  --batch_size 16 \
+  --epochs 5 \
+  --lr 1e-4
+
+python -m mi_reward.evaluation.eval_reward_ranking \
+  --preferences dataset/mi_reward/preferences/val_preferences.jsonl \
+  --feature_root dataset/mi_reward/features \
+  --ckpt results/mi_reward/reward_head_mvp/pytorch_model.pt
+
+python -m mi_reward.evaluation.eval_progress_corr \
+  --manifest dataset/mi_reward/manifests/libero_manifest.jsonl \
+  --feature_root dataset/mi_reward/features \
+  --success_refs dataset/mi_reward/manifests/success_refs.jsonl \
+  --output results/mi_reward/libero_progress_report.json
+```
+
+Shell wrappers are available under `mi_reward/scripts/` and can be driven with
+environment variables such as `MANIFEST`, `SUCCESS_REFS`, `FEATURE_ROOT`,
+`PREFERENCES`, and `OUTPUT_DIR`.
+
+`LaWAMLAMFeatureExtractor` reuses the same LAM loader used by LaWAM policy
+configs, `latent_action_model.core.lam_model.load_latent_action_model`, and calls
+`LatentLAMModel.extract_vision_features` for frozen visual features. It accepts
+`lam_config_path`, `lam_ckpt_path`, and optional `vision_model_id`; if local LAM
+weights are unavailable it falls back to the DINO-style extractor. The standalone
+smoke command is:
+
+```bash
+python -m mi_reward.features.lawam_lam_extractor \
+  --config mi_reward/configs/mi_reward_base.yaml \
+  --image path/to/test.png
+```
+
+Remaining TODOs for deeper integration are task-conditioned feature
+preprocessing, world-model generated future export, and reward-head handoff into
+downstream policy/RLPD training.
 
 ## Environment Setup
 
@@ -489,3 +590,5 @@ are valid in the new environment.
 This codebase is based on StarVLA and retains its MIT license. It also builds on
 open-source robotics and VLM components including LeRobot, Qwen-VL, DINO,
 LIBERO, and RoboTwin.
+#   M I - d i r e c t i o n a l - W A M - r e w a r d - m o d e l - p r e t r a i n  
+ 

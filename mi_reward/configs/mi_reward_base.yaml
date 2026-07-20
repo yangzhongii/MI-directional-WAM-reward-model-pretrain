@@ -1,0 +1,30 @@
+paths:
+  manifest: dataset/mi_reward/manifests/train_manifest.jsonl
+  success_refs: dataset/mi_reward/manifests/success_refs.jsonl
+  feature_root: dataset/mi_reward/features
+  preference_output: dataset/mi_reward/preferences/train_preferences.jsonl
+  output_dir: results/mi_reward/reward_head_mvp
+
+features:
+  feature_extractor: lawam_lam
+  extractor: dino_v3
+  lam_config_path: null
+  lam_ckpt_path: null
+  vision_model_id: null
+  device: cuda
+  dino_model_path: null
+  image_size: 224
+
+scoring:
+  mi_mode: gaussian_mi_proxy
+  gamma: 0.99
+  margin: 0.05
+  top_k: 5
+  bottom_k: 5
+
+training:
+  batch_size: 16
+  epochs: 5
+  lr: 1.0e-4
+  hidden_dim: 256
+  seed: 0
