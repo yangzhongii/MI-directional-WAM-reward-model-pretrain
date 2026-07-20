@@ -59,6 +59,66 @@ frame-level MI growth toward the success reference.
 **Stage 3:** Pseudo-preference reward-model SFT trains a trajectory reward head
 with pairwise ranking loss on the scored candidates.
 
+## Relation to Dame and Marchand's MI Visual Servoing
+
+This work is inspired by:
+
+> Amaury Dame and Eric Marchand, "Mutual Information-Based Visual Servoing,"
+> IEEE Transactions on Robotics, 2011.
+
+The original Dame method uses Shannon mutual information as a primary
+image-alignment objective, builds differentiable soft histograms using B-spline
+kernels, and derives an MI gradient and Hessian with respect to camera pose for
+direct visual-servoing control.
+
+**Our adaptation transfers this information-potential principle from camera-pose
+optimization to generated-trajectory progress estimation**, without reproducing
+the camera controller:
+
+| Dame TRO | This Repository |
+|---|---|
+| Current image $I(r)$ | Candidate imagined future trajectory |
+| Desired image $I^*$ | Success reference trajectory |
+| Camera pose $r$ | Candidate trajectory branch |
+| MI alignment objective | Temporally aligned latent MI potential |
+| B-spline soft histograms | B-spline soft-histogram MI estimator (`DameSoftHistogramMI`) |
+| Camera velocity / control law | Pseudo-preference supervision and potential reward distillation |
+| MI controller (6-DOF servo) | Reward-potential student model (`StatePotentialRewardModel`) |
+
+**We do not reuse** Dame's camera interaction matrix, Hessian controller, or
+six-DOF servo law. "Direction" in this work means the progression of an
+imagined trajectory through a successful reference sequence — not
+differentiating through a generative model to output robot actions.
+
+Key components adopted from Dame & Marchand (2011):
+
+- **B-spline soft histograms** for differentiable MI estimation between
+  latent token features (not pixels).
+- **Monotonic temporal alignment** via dynamic programming, analogous to
+  how Dame aligns image regions across views.
+- **MI as a progress signal** rather than as a direct control objective.
+
+Key components deliberately not adopted:
+
+- Camera interaction matrix and pose Jacobian.
+- Hessian-based second-order optimization.
+- Six-DOF velocity control law.
+- Real-time image-stream processing.
+
+### Citation
+
+```bibtex
+@article{dame2011mutual,
+  title = {Mutual Information-Based Visual Servoing},
+  author = {Dame, Amaury and Marchand, Eric},
+  journal = {IEEE Transactions on Robotics},
+  volume = {27},
+  number = {5},
+  pages = {958--969},
+  year = {2011},
+}
+```
+
 ## Relationship to LaWAM
 
 This extension is a **modular reward-learning addition**, not a replacement for
@@ -131,20 +191,27 @@ This is more precisely **preference-based reward-model fine-tuning**; we use
 | Module | Status | Description |
 |---|---|---|
 | LaWAM backbone | Available | Upstream latent world-action model (starVLA, latent_action_model) |
-| MI scoring (`mi_potential`) | Implemented | Gaussian correlation proxy and soft-histogram MI estimator |
+| Dame B-spline MI (`dame_soft_histogram`) | Implemented | B-spline soft-histogram MI with channelwise/flattened modes and NMI |
+| Token correspondence | Implemented | same_index, nearest_cosine, pooled_window strategies |
+| Monotonic temporal alignment | Implemented | Viterbi DP alignment with optional soft-DTW fallback |
+| Directional potential scoring | Implemented | Multi-component score: endpoint, positive gain, regression penalty, stage progress |
+| Legacy delta scoring | Preserved | `gaussian_mi_proxy` and `histogram_mi` retained as ablation modes |
+| MI scoring (`mi_potential`) | Available | Gaussian correlation proxy and basic soft-histogram |
 | Trajectory delta scoring | Implemented | Frame-potential aggregation with $\gamma$-weighted delta |
-| Preference generation | Implemented | Top-$k$ vs. bottom-$k$ pairwise construction |
-| Reward head | Implemented | MLP with mean+last pooling over trajectory features |
-| Pairwise ranking SFT | Implemented | Log-sigmoid ranking loss with AdamW training loop |
-| Feature extraction (DINOv3) | Implemented | Local-weight DINO extractor with deterministic fallback |
+| Preference generation | Implemented | Top-$k$ vs. bottom-$k$ and adjacent-ranked modes with confidence and versioning |
+| State-potential reward model | Implemented | GRU/MLP/transformer architectures with per-timestep potential output |
+| Multi-objective distillation loss | Implemented | Rank + potential + direction losses with confidence weighting |
+| Feature extraction (DINOv3) | Implemented | Local-weight DINO extractor with token-level support |
 | Feature extraction (LaWAM LAM) | Implemented | Wraps LaWAM `LatentLAMModel.extract_vision_features` |
-| Feature caching | Implemented | Per-trajectory `.pt` cache with manifest-driven bulk extraction |
+| Feature caching | Implemented | Per-trajectory `.pt` cache with token-level support |
 | LIBERO manifest builder | Implemented | Parses LIBERO eval runs into trajectory manifests |
 | RoboTwin manifest builder | Implemented | Parses RoboTwin eval runs into trajectory manifests |
+| Baselines | Implemented | Pixel MSE, latent cosine, pooled correlation, unaligned Dame MI |
 | Pairwise ranking evaluation | Implemented | Accuracy, reward margin, score correlation |
 | Progress correlation evaluation | Implemented | Temporal progress correlation and success/failure AUC |
 | Shell script wrappers | Implemented | Scripts under `mi_reward/scripts/` |
 | Smoke test | Implemented | Synthetic end-to-end pipeline test |
+| Unit tests | Implemented | Soft histogram, temporal alignment, reward loss tests |
 | Cosmos-Predict data adapter | Planned | No Cosmos integration code exists |
 | Task-conditioned feature preprocessing | Planned | Current extractors pass task as unused parameter |
 | Downstream RL/RLPD integration | Planned | Reward-head handoff into policy training not yet implemented |

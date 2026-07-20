@@ -44,6 +44,20 @@ class CachedFeatureStore:
         self.save(item_id, features)
         return features
 
+    def get_or_extract_tokens(self, item_id: str, frame_paths: list[str], task: str, extractor: BaseFeatureExtractor) -> torch.Tensor:
+        """Extract or load token-level features [T, N, D].
+
+        Uses a separate cache path suffixed with '_tokens' to avoid
+        collisions with pooled-feature caches.
+        """
+        token_id = item_id + "_tokens"
+        path = self.path_for(token_id)
+        if path.exists():
+            return self.load(token_id)
+        features = extractor.extract_trajectory_tokens(frame_paths, task)
+        self.save(token_id, features)
+        return features
+
 
 def make_extractor(
     name: str,

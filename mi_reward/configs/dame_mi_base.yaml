@@ -1,0 +1,91 @@
+# Dame-Inspired Temporally Aligned MI Potential Distillation
+# =====================================================================
+
+teacher_version: "dame_aligned_v1"
+
+paths:
+  manifest: dataset/mi_reward/manifests/train_manifest.jsonl
+  success_refs: dataset/mi_reward/manifests/success_refs.jsonl
+  feature_root: dataset/mi_reward/features
+  token_feature_root: dataset/mi_reward/token_features
+  preference_output: dataset/mi_reward/preferences/train_preferences.jsonl
+  output_dir: results/mi_reward/reward_head_mvp
+
+features:
+  feature_extractor: lawam_lam
+  extractor: dino_v3
+  lam_config_path: null
+  lam_ckpt_path: null
+  vision_model_id: null
+  device: cuda
+  dino_model_path: null
+  image_size: 224
+  return_tokens: true
+
+method:
+  name: temporally_aligned_dame_mi
+  gamma: 0.99
+
+mi:
+  estimator: dame_bspline
+  num_bins: 8
+  spline_order: 3
+  normalized_mi: false
+  channel_mode: channelwise
+  correspondence: same_index
+  normalization: robust_minmax
+  eps: 1.0e-8
+
+alignment:
+  method: monotonic_viterbi
+  max_step: null
+  stay_penalty: 0.0
+  jump_penalty: 0.01
+  multi_reference_aggregation: best
+
+directional_score:
+  w_endpoint: 1.0
+  w_positive: 0.5
+  w_regression: 1.0
+  w_stage: 1.0
+  w_alignment: 0.1
+
+scoring:
+  mi_mode: gaussian_mi_proxy
+  gamma: 0.99
+  margin: 0.05
+  top_k: 5
+  bottom_k: 5
+
+preferences:
+  margin: 0.05
+  min_confidence: 0.5
+  top_k: 5
+  bottom_k: 5
+  max_pairs_per_task: 100
+  pair_mode: top_vs_bottom
+
+reward_model:
+  architecture: gru
+  hidden_dim: 256
+  token_pooling: mean
+  num_layers: 2
+  num_heads: 4
+  dropout: 0.1
+  use_task_conditioning: false
+  task_dim: null
+
+loss:
+  lambda_rank: 1.0
+  lambda_potential: 1.0
+  lambda_direction: 0.5
+  confidence_temperature: 0.1
+  huber_delta: 1.0
+  use_confidence_weights: true
+
+training:
+  batch_size: 16
+  epochs: 5
+  lr: 1.0e-4
+  hidden_dim: 256
+  seed: 0
