@@ -843,6 +843,15 @@ The following evaluation categories are planned but not yet implemented:
 - Comparison against LaWAM latent cosine similarity (without reward-model SFT)
 - Comparison against available robot reward models
 
+### RLinf Franka RLPD Integration
+
+Documentation for deploying the trained MI state-potential reward model in RLinf's
+asynchronous Franka RLPD pipeline is available at:
+
+- **Franka 真机部署文档:** [docs/rlinf_integration/franka_mi_potential_rlpd.rst](docs/rlinf_integration/franka_mi_potential_rlpd.rst)
+- **集成实现报告:** [docs/rlinf_integration/mi_potential_rlpd_implementation_report.md](docs/rlinf_integration/mi_potential_rlpd_implementation_report.md)
+- **代码审计:** [docs/rlinf_integration/mi_potential_rlpd_code_audit.md](docs/rlinf_integration/mi_potential_rlpd_code_audit.md)
+
 ## Design Principles
 
 - **Modularity.** The `mi_reward/` package is self-contained and does not
