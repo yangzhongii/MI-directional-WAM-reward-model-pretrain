@@ -1,0 +1,156 @@
+# RLPD + MI Potential Shaping: Franka Peg Insertion
+# =====================================================================
+# DROP-IN: examples/embodiment/config/
+#          realworld_peginsertion_rlpd_cnn_async_mi_potential.yaml
+#
+# Inherits from realworld_peginsertion_rlpd_cnn_async.yaml.
+# Adds MI-distilled state-potential reward shaping (Phase A).
+# Phase B (MI-guided replay) is disabled by default.
+# =====================================================================
+
+defaults:
+  - realworld_peginsertion_rlpd_cnn_async
+  - _self_
+
+# ---------------------------------------------------------------------------
+# Reward: enable MI potential shaping
+# ---------------------------------------------------------------------------
+reward:
+  use_reward_model: true
+  group_name: "RewardGroup"
+
+  # Must be false: the reward model runs on the training node,
+  # the Franka environment runs on the control node.
+  standalone_realworld: false
+
+  # Per-step reward mode: compute reward from each transition
+  reward_mode: "per_step"
+
+  # Declare that the reward model returns state potentials,
+  # not scalar rewards or success probabilities.
+  reward_output_type: "state_potential"
+
+  # Environment reward weight — keep sparse task success reward active
+  env_reward_weight: 1.0
+
+  # MI potential reward weight
+  reward_weight: 1.0
+
+  # -----------------------------------------------------------------------
+  # Potential shaping configuration
+  # -----------------------------------------------------------------------
+  potential_shaping:
+
+    # Enable MI potential-difference reward shaping
+    enabled: true
+
+    # Discount for potential difference (defaults to algorithm.gamma)
+    gamma: ${algorithm.gamma}
+
+    # Scale factor for the potential-difference reward
+    scale: 1.0
+
+    # Clamp potential-difference to [-delta_clip, +delta_clip]
+    delta_clip: 1.0
+
+    # Gate the potential reward by model confidence
+    confidence_gate: true
+
+    # How to combine cached and next-step confidence: "min" or "geometric_mean"
+    confidence_combine: "min"
+
+    # Minimum confidence to apply any shaping
+    min_confidence: 0.0
+
+    # Behavior when model returns invalid output:
+    #   "zero_shaping" — assign zero MI shaping, keep env reward
+    #   "skip" — skip this step
+    invalid_behavior: "zero_shaping"
+
+    # Normalize potentials (not recommended for initial runs)
+    normalize: false
+
+    # Skip potential shaping for the first N global steps
+    warmup_steps: 0
+
+    # NEVER use potential for episode termination (safety)
+    use_for_termination: false
+
+    # NEVER use potential for task success detection (safety)
+    use_for_success: false
+
+  # -----------------------------------------------------------------------
+  # MI potential model configuration
+  # -----------------------------------------------------------------------
+  model:
+
+    # Register as "mi_potential" in the reward model registry
+    model_type: "mi_potential"
+
+    # Path to the trained state-potential student checkpoint
+    # Must contain pytorch_model.pt and optionally metadata.json
+    model_path: /path/to/mi_student_checkpoint
+
+    # Optional: YAML config with reward_model section
+    config_path: null
+
+    # Precision: "fp32", "fp16", or "bf16"
+    precision: "fp32"
+
+    # Device for reward inference
+    device: "cuda"
+
+    # Input mode: "current_frame" (single frame) or "history_buffer" (window)
+    input_mode: "current_frame"
+
+    # Observation keys to pass to the model
+    image_keys:
+      - main_images
+      # - wrist_images   # uncomment if model was trained with wrist
+      # - extra_view_images
+
+    # Fixed task description for peg insertion
+    task_description: "insert the peg into the target hole"
+
+# ---------------------------------------------------------------------------
+# Phase B: MI-guided replay sampling (OPTIONAL, disabled by default)
+# ---------------------------------------------------------------------------
+algorithm:
+
+  # MI-progress-guided stratified replay sampling
+  mi_guided_replay:
+
+    # Enable stratified sampling (Phase B)
+    enabled: false
+
+    # Apply to: "online_only" or "all" (demo + online)
+    # "online_only" preserves RLPD's 50/50 demo/online split
+    apply_to: "online_only"
+
+    # Classification thresholds
+    positive_threshold: 0.02   # mi_delta > 0.02 → positive progress
+    negative_threshold: -0.02  # mi_delta < -0.02 → regression
+
+    # Minimum confidence for stratified classification
+    min_confidence: 0.2
+
+    # Target fractions (must sum to 1.0)
+    positive_fraction: 0.4
+    neutral_fraction: 0.2
+    negative_fraction: 0.4
+
+    # Fall back to uniform sampling when a class is empty
+    fallback_to_uniform: true
+
+    # Maximum resample attempts before fallback
+    max_resample_attempts: 5
+
+# ---------------------------------------------------------------------------
+# Safety: MI potential must NOT control reset, success, or safety
+# ---------------------------------------------------------------------------
+# The following are INTENTIONALLY NOT CONFIGURABLE here:
+#   - MI potential cannot terminate episodes
+#   - MI potential cannot declare task success
+#   - MI potential cannot bypass collision/force/workspace limits
+#   - MI potential cannot trigger emergency stop override
+#   - reward_output_type: "state_potential" never applies sigmoid/threshold
