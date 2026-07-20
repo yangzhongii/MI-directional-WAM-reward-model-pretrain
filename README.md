@@ -49,7 +49,7 @@ pipeline.
 ## Architecture
 
 <p align="center">
-  <img src="./assets/MI directional reward model.png" alt="MI-directional reward pretraining pipeline overview" width="95%">
+  <img src="./assets/Temporally Aligned MI Potential Distillation.png" alt="MI-directional reward pretraining pipeline overview" width="95%">
 </p>
 
 **Stage 1:** World-model future generation produces candidate imagined trajectories
