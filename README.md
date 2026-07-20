@@ -1,4 +1,6 @@
-# LaWAM: Latent World Action Models for Efficient Dynamics-Aware Robot Policies
+# MI-Directional Reward Pretraining from World-Model Futures
+
+*A modular mutual-information reward-learning extension built on [RLinf/LaWAM](https://github.com/RLinf/LaWAM).*
 
 <p>
   <a href="https://arxiv.org/abs/2606.15768"><img alt="arXiv" height="24" src="https://img.shields.io/badge/arXiv-2606.15768-b31b1b.svg"></a>
@@ -10,155 +12,173 @@
   <a href="https://huggingface.co/datasets/jialei02/robotwin_merged"><img alt="Hugging Face Dataset - RoboTwin" src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Dataset%20RoboTwin-f7c843"></a>
 </p>
 
-This repository contains the training and evaluation code for **LaWAM**,
-a **La**tent **W**orld **A**ction **M**odel for robot policies. LaWAM predicts
-future observation features in a frozen visual feature space and injects them as
-latent visual subgoals for action generation.
+---
 
-## Paper Overview
+## Research Overview
 
-LaWAM introduces a latent world-model interface for VLA policies. The overview
-figure below summarizes the two-stage pipeline: latent world model learning and
-LaWAM policy training with latent visual subgoals.
+Large world models and latent world-action models can generate or predict multiple
+plausible task futures, but generating futures alone does not provide calibrated
+reward supervision. This extension studies whether reward-model supervision can be
+constructed without task-specific real-robot rollouts or manually labeled robot
+reward data, by deriving pseudo-preferences from imagined trajectories.
+
+The high-level pipeline is:
+
+> World-model generated futures → latent feature extraction → mutual-information
+> potential scoring → directional progress ranking → pseudo-preference construction
+> → reward-model SFT
+
+Given a language-conditioned task, a success reference trajectory, and multiple
+candidate imagined trajectories, a frozen visual or world-model encoder produces
+latent features. Frame-level mutual-information (MI) potential between candidate
+and reference features is aggregated into a trajectory-level directional progress
+score. Candidates with larger MI-potential growth are ranked higher, and top-vs-bottom
+pairs are converted into preference labels for pairwise reward-model fine-tuning.
+
+The MI potential acts as a **pseudo-supervision generator**, not as an online
+controller or an MI-MPC method. "Direction" refers to ranking imagined future
+trajectories by MI-potential growth; it does **not** mean directly
+differentiating through a generative model to control the robot.
+
+This initial objective is reward pretraining without task-specific real-robot
+reward labels. External robot benchmarks or real trajectories are still required
+for evaluation and validation. The extension is designed as a modular component
+built on the LaWAM codebase and does **not** modify the original policy training
+pipeline.
+
+## Architecture
 
 <p align="center">
-  <img src="./assets/lawam_overview.png" alt="LaWAM method overview" width="95%">
+  <img src="./assets/MI directional reward model.png" alt="MI-directional reward pretraining pipeline overview" width="95%">
 </p>
 
-## Index
+**Stage 1:** World-model future generation produces candidate imagined trajectories
+and a success reference trajectory for a given language-conditioned task.
+**Stage 2:** MI-potential direction scoring ranks each candidate by its
+frame-level MI growth toward the success reference.
+**Stage 3:** Pseudo-preference reward-model SFT trains a trajectory reward head
+with pairwise ranking loss on the scored candidates.
 
-- [Paper Overview](#paper-overview)
-- [File Structure](#file-structure)
-- [Environment Setup](#environment-setup)
-- [Model Preparation](#model-preparation)
-- [Inference](#inference)
-  - [LIBERO](#libero-inference)
-  - [RoboTwin](#robotwin-inference)
-- [SFT Training](#sft-training)
-  - [LIBERO](#libero-sft)
-  - [RoboTwin](#robotwin-sft)
-- [MI Reward Pretraining](#mi-reward-pretraining)
-- [Checkpoint Notes](#checkpoint-notes)
-- [Citation](#citation)
-- [Acknowledgements](#acknowledgements)
+## Relationship to LaWAM
 
-## File Structure
+This extension is a **modular reward-learning addition**, not a replacement for
+LaWAM. The original LaWAM policy pipeline is left intact.
+
+| Component | Original LaWAM | MI Reward Extension |
+|---|---|---|
+| Main purpose | Latent visual subgoals for action generation | Directional reward supervision |
+| Main input | Robot observations and language instructions | Candidate futures and success references |
+| Latent representation | Frozen visual feature space (DINO / V-JEPA) | Reused or adapted LaWAM / DINO feature space |
+| Main output | Robot action chunks | Scalar reward or trajectory preference |
+| Training objective | Policy / latent world-action model training | Pairwise reward ranking (Bradley-Terry) |
+| Real-robot data | Used by original training and evaluation pipeline | Not required for pseudo-label construction; needed for validation |
+
+## Method
+
+### Generated Futures and Success References
+
+For each language-conditioned task $g$, a world model or latent world-action
+model produces:
+
+- A **success reference** $\tau^+ = (I^+_0, \dots, I^+_T)$ — a trajectory
+  known or predicted to complete the task.
+- Multiple **candidate trajectories** $\tau_i = (I_{i,0}, \dots, I_{i,T})$ —
+  imagined futures that may vary in task progress.
+
+### Latent Feature Extraction
+
+A frozen visual encoder $\mathcal{F}$ (DINOv3 or LaWAM LAM) maps each frame into
+a latent feature vector conditioned on the task instruction:
+
+$$z_{i,t} = \mathcal{F}(I_{i,t}, g), \quad z^+_s = \mathcal{F}(I^+_s, g)$$
+
+### MI-Potential Direction Scoring
+
+The frame-level MI potential between a candidate frame and the success reference is:
+
+$$\Phi_{i,t} = \max_s \text{MI}(z_{i,t}, z^+_s)$$
+
+Two MI estimators are provided: a **Gaussian correlation proxy** (default) and a
+**soft-histogram estimator**. The trajectory-level directional score aggregates
+MI-potential growth across consecutive frames:
+
+$$S^\Delta_i = \frac{1}{T-1} \sum_{t=0}^{T-2} \bigl[\gamma \cdot \Phi_{i,t+1} - \Phi_{i,t}\bigr]$$
+
+A larger $S^\Delta_i$ indicates that the candidate future follows a direction
+with stronger progress toward the successful task reference.
+
+### Pseudo-Preference Construction
+
+Candidates are ranked by $S^\Delta_i$. Preference pairs are formed from top-$k$
+vs. bottom-$k$ candidates when the score margin exceeds a threshold:
+
+$$S^\Delta_i > S^\Delta_j + \text{margin} \implies \tau_i \succ \tau_j$$
+
+### Reward-Model SFT
+
+A lightweight trajectory reward head $R_\phi$ is trained with pairwise ranking
+loss (Bradley-Terry / log-sigmoid):
+
+$$\mathcal{L}_{\text{rank}} = -\log \sigma\bigl(R_\phi(\tau_{\text{chosen}}, g) - R_\phi(\tau_{\text{rejected}}, g)\bigr)$$
+
+The reward head pools per-frame features via mean pooling and last-frame
+pooling, then passes the concatenated representation through a small MLP.
+This is more precisely **preference-based reward-model fine-tuning**; we use
+"SFT" to emphasize the supervised nature of pseudo-label training.
+
+## Repository Status
+
+| Module | Status | Description |
+|---|---|---|
+| LaWAM backbone | Available | Upstream latent world-action model (starVLA, latent_action_model) |
+| MI scoring (`mi_potential`) | Implemented | Gaussian correlation proxy and soft-histogram MI estimator |
+| Trajectory delta scoring | Implemented | Frame-potential aggregation with $\gamma$-weighted delta |
+| Preference generation | Implemented | Top-$k$ vs. bottom-$k$ pairwise construction |
+| Reward head | Implemented | MLP with mean+last pooling over trajectory features |
+| Pairwise ranking SFT | Implemented | Log-sigmoid ranking loss with AdamW training loop |
+| Feature extraction (DINOv3) | Implemented | Local-weight DINO extractor with deterministic fallback |
+| Feature extraction (LaWAM LAM) | Implemented | Wraps LaWAM `LatentLAMModel.extract_vision_features` |
+| Feature caching | Implemented | Per-trajectory `.pt` cache with manifest-driven bulk extraction |
+| LIBERO manifest builder | Implemented | Parses LIBERO eval runs into trajectory manifests |
+| RoboTwin manifest builder | Implemented | Parses RoboTwin eval runs into trajectory manifests |
+| Pairwise ranking evaluation | Implemented | Accuracy, reward margin, score correlation |
+| Progress correlation evaluation | Implemented | Temporal progress correlation and success/failure AUC |
+| Shell script wrappers | Implemented | Scripts under `mi_reward/scripts/` |
+| Smoke test | Implemented | Synthetic end-to-end pipeline test |
+| Cosmos-Predict data adapter | Planned | No Cosmos integration code exists |
+| Task-conditioned feature preprocessing | Planned | Current extractors pass task as unused parameter |
+| Downstream RL/RLPD integration | Planned | Reward-head handoff into policy training not yet implemented |
+| Real-robot reward validation | Planned | No real-robot evaluation pipeline |
+
+## Repository Structure
 
 ```text
-starVLA/                 Core LaWAM model, dataloaders, training loop, configs
-latent_action_model/     LaWM / latent-action model code and utilities
-deployment/              Policy server implementations for evaluation
-examples/LIBERO/         LIBERO evaluation scripts
-examples/Robotwin/       RoboTwin evaluation scripts and native policy adapter
-requirements.txt         LaWAM-side Python dependencies
-train_lawam.sh
-train_lawam_distributed.sh
+starVLA/                   Core LaWAM model, dataloaders, training loop, configs
+latent_action_model/       LaWM / latent-action model code and utilities
+deployment/                Policy server implementations for evaluation
+examples/LIBERO/           LIBERO evaluation scripts
+examples/Robotwin/         RoboTwin evaluation scripts and native policy adapter
+mi_reward/                 MI-directional reward pretraining extension
+├── configs/               Central YAML configuration
+├── data/                  Schema definitions, manifest builders, datasets
+├── features/              Feature extractors (DINOv3, LaWAM LAM) and cache store
+├── scoring/               MI potential, trajectory delta scoring, preference builder
+├── models/                Trajectory reward head
+├── training/              Pairwise ranking loss, collator, SFT training loop
+├── evaluation/            Ranking accuracy and progress correlation evaluation
+└── scripts/               Shell wrappers for the full pipeline
+tests/                     Smoke test for the MI reward pipeline
+requirements.txt           Python dependencies
+pyproject.toml             Package metadata and build configuration
+train_lawam.sh             Single-node LaWAM training entrypoint
+train_lawam_distributed.sh Multi-node LaWAM training entrypoint
 ```
 
-## MI Reward Pretraining
+## Installation
 
-The `mi_reward/` package is a standalone module for MI-directional reward
-pretraining from world-model generated futures. It does not modify the LaWAM
-policy training loop. The MVP pipeline:
+### LaWAM Backbone
 
-1. caches trajectory and success-reference features,
-2. scores generated futures by MI-potential growth toward success references,
-3. converts top-vs-bottom scored trajectories into preference pairs, and
-4. trains a small trajectory reward head with pairwise ranking SFT.
-
-Expected JSONL inputs:
-
-```json
-{"traj_id": "task_a/generated_0001", "task": "task_a", "frames": ["frames/0.png"], "source": "world_model", "split": "train"}
-{"ref_id": "task_a/success_0001", "task": "task_a", "frames": ["success/0.png"]}
-{"task": "task_a", "chosen_traj_id": "task_a/good", "rejected_traj_id": "task_a/bad", "chosen_score": 0.4, "rejected_score": 0.1, "score_type": "mi_delta"}
-```
-
-Run the synthetic smoke test:
-
-```bash
-python -m pytest tests/test_mi_reward_smoke.py
-```
-
-Run on real generated trajectories:
-
-```bash
-python -m mi_reward.data.build_manifest \
-  --source_type libero \
-  --run_dir results/eval_runs/libero/<ckpt_alias>/<run_tag> \
-  --output dataset/mi_reward/manifests/libero_manifest.jsonl \
-  --fps 2.0
-
-python -m mi_reward.data.build_manifest \
-  --source_type robotwin \
-  --run_dir results/eval_runs/robotwin/<ckpt_alias>__<task_config>/<run_tag> \
-  --output dataset/mi_reward/manifests/robotwin_manifest.jsonl \
-  --fps 2.0
-
-python -m mi_reward.features.cached_feature_store \
-  --manifest dataset/mi_reward/manifests/train_manifest.jsonl \
-  --success_refs dataset/mi_reward/manifests/success_refs.jsonl \
-  --feature_root dataset/mi_reward/features \
-  --feature_extractor lawam_lam \
-  --lam_config_path latent_action_model/logs/dino_large_vae/lam_release/dino_large_vae.yaml \
-  --lam_ckpt_path latent_action_model/logs/dino_large_vae/lam_release/checkpoints/pytorch_model.pt \
-  --vision_model_id /path/to/local/dino_or_vjepa_weights
-
-python -m mi_reward.scoring.build_preferences \
-  --manifest dataset/mi_reward/manifests/train_manifest.jsonl \
-  --success_refs dataset/mi_reward/manifests/success_refs.jsonl \
-  --feature_root dataset/mi_reward/features \
-  --output dataset/mi_reward/preferences/train_preferences.jsonl \
-  --gamma 0.99 \
-  --margin 0.05 \
-  --top_k 5 \
-  --bottom_k 5
-
-python -m mi_reward.training.train_reward_sft \
-  --preferences dataset/mi_reward/preferences/train_preferences.jsonl \
-  --feature_root dataset/mi_reward/features \
-  --output_dir results/mi_reward/reward_head_mvp \
-  --batch_size 16 \
-  --epochs 5 \
-  --lr 1e-4
-
-python -m mi_reward.evaluation.eval_reward_ranking \
-  --preferences dataset/mi_reward/preferences/val_preferences.jsonl \
-  --feature_root dataset/mi_reward/features \
-  --ckpt results/mi_reward/reward_head_mvp/pytorch_model.pt
-
-python -m mi_reward.evaluation.eval_progress_corr \
-  --manifest dataset/mi_reward/manifests/libero_manifest.jsonl \
-  --feature_root dataset/mi_reward/features \
-  --success_refs dataset/mi_reward/manifests/success_refs.jsonl \
-  --output results/mi_reward/libero_progress_report.json
-```
-
-Shell wrappers are available under `mi_reward/scripts/` and can be driven with
-environment variables such as `MANIFEST`, `SUCCESS_REFS`, `FEATURE_ROOT`,
-`PREFERENCES`, and `OUTPUT_DIR`.
-
-`LaWAMLAMFeatureExtractor` reuses the same LAM loader used by LaWAM policy
-configs, `latent_action_model.core.lam_model.load_latent_action_model`, and calls
-`LatentLAMModel.extract_vision_features` for frozen visual features. It accepts
-`lam_config_path`, `lam_ckpt_path`, and optional `vision_model_id`; if local LAM
-weights are unavailable it falls back to the DINO-style extractor. The standalone
-smoke command is:
-
-```bash
-python -m mi_reward.features.lawam_lam_extractor \
-  --config mi_reward/configs/mi_reward_base.yaml \
-  --image path/to/test.png
-```
-
-Remaining TODOs for deeper integration are task-conditioned feature
-preprocessing, world-model generated future export, and reward-head handoff into
-downstream policy/RLPD training.
-
-## Environment Setup
-
-Clone the repository into a directory named `LaWAM`, then create the
-policy/training environment from that repository root:
+Clone the repository and create the training environment:
 
 ```bash
 git clone https://github.com/RLinf/LaWAM.git LaWAM
@@ -188,11 +208,170 @@ print("gpus", torch.cuda.device_count())
 PY
 ```
 
-## Model Preparation
+### MI Reward Extension
 
-This step is required before both training and inference.
+The `mi_reward/` package is installed by the same `pip install -e .` command
+above. Additional runtime dependencies (`Pillow`, `torchvision`, `imageio`,
+`PyYAML`) are already included in `requirements.txt`.
+
+No additional installation steps are required beyond the LaWAM backbone setup.
+
+## Data Format
+
+### Candidate Trajectory (JSONL manifest)
+
+```json
+{
+  "traj_id": "libero/LIVING_ROOM_SCENE4/task00/episode000",
+  "task": "open the drawer",
+  "frames": ["path/to/000.png", "path/to/001.png"],
+  "source": "libero_eval",
+  "split": "eval",
+  "metadata": {
+    "suite": "libero_goal",
+    "task_id": 0,
+    "success": true
+  }
+}
+```
+
+### Success Reference (JSONL)
+
+```json
+{
+  "ref_id": "libero/LIVING_ROOM_SCENE4/task00/success",
+  "task": "open the drawer",
+  "frames": ["path/to/success_000.png", "path/to/success_001.png"]
+}
+```
+
+### Preference Pair (JSONL)
+
+```json
+{
+  "task": "open the drawer",
+  "chosen_traj_id": "libero/LIVING_ROOM_SCENE4/task00/episode003",
+  "rejected_traj_id": "libero/LIVING_ROOM_SCENE4/task00/episode007",
+  "chosen_score": 0.42,
+  "rejected_score": -0.08,
+  "score_type": "mi_delta"
+}
+```
+
+These schemas are defined in `mi_reward/data/schema.py` and used throughout the
+pipeline.
+
+## Quick Start
+
+### 1. Build trajectory manifests
+
+```bash
+# From LIBERO eval run:
+python -m mi_reward.data.build_manifest \
+  --source_type libero \
+  --run_dir results/eval_runs/libero/<ckpt_alias>/<run_tag> \
+  --output dataset/mi_reward/manifests/libero_manifest.jsonl \
+  --fps 2.0
+
+# From RoboTwin eval run:
+python -m mi_reward.data.build_manifest \
+  --source_type robotwin \
+  --run_dir results/eval_runs/robotwin/<ckpt_alias>__<task_config>/<run_tag> \
+  --output dataset/mi_reward/manifests/robotwin_manifest.jsonl \
+  --fps 2.0
+```
+
+### 2. Extract and cache features
+
+```bash
+python -m mi_reward.features.cached_feature_store \
+  --manifest dataset/mi_reward/manifests/train_manifest.jsonl \
+  --success_refs dataset/mi_reward/manifests/success_refs.jsonl \
+  --feature_root dataset/mi_reward/features \
+  --feature_extractor lawam_lam \
+  --lam_config_path latent_action_model/logs/dino_large_vae/lam_release/dino_large_vae.yaml \
+  --lam_ckpt_path latent_action_model/logs/dino_large_vae/lam_release/checkpoints/pytorch_model.pt \
+  --vision_model_id weights/dinov3-vitb16-pretrain-lvd1689m
+```
+
+If local LAM weights are unavailable, omit `--lam_config_path` and
+`--lam_ckpt_path` to fall back to the DINOv3 extractor.
+
+### 3. Score trajectories and build preference pairs
+
+```bash
+python -m mi_reward.scoring.build_preferences \
+  --manifest dataset/mi_reward/manifests/train_manifest.jsonl \
+  --success_refs dataset/mi_reward/manifests/success_refs.jsonl \
+  --feature_root dataset/mi_reward/features \
+  --output dataset/mi_reward/preferences/train_preferences.jsonl \
+  --gamma 0.99 \
+  --margin 0.05 \
+  --top_k 5 \
+  --bottom_k 5
+```
+
+### 4. Train the reward model
+
+```bash
+python -m mi_reward.training.train_reward_sft \
+  --preferences dataset/mi_reward/preferences/train_preferences.jsonl \
+  --feature_root dataset/mi_reward/features \
+  --output_dir results/mi_reward/reward_head_mvp \
+  --batch_size 16 \
+  --epochs 5 \
+  --lr 1e-4
+```
+
+### 5. Evaluate ranking accuracy
+
+```bash
+python -m mi_reward.evaluation.eval_reward_ranking \
+  --preferences dataset/mi_reward/preferences/val_preferences.jsonl \
+  --feature_root dataset/mi_reward/features \
+  --ckpt results/mi_reward/reward_head_mvp/pytorch_model.pt
+```
+
+### 6. Evaluate temporal progress correlation
+
+```bash
+python -m mi_reward.evaluation.eval_progress_corr \
+  --manifest dataset/mi_reward/manifests/libero_manifest.jsonl \
+  --feature_root dataset/mi_reward/features \
+  --success_refs dataset/mi_reward/manifests/success_refs.jsonl \
+  --output results/mi_reward/libero_progress_report.json
+```
+
+### Smoke test
+
+```bash
+python -m pytest tests/test_mi_reward_smoke.py
+```
+
+### Shell wrappers
+
+Shell wrappers under `mi_reward/scripts/` accept environment variables
+(`MANIFEST`, `SUCCESS_REFS`, `FEATURE_ROOT`, `PREFERENCES`, `OUTPUT_DIR`,
+etc.) in place of CLI flags:
+
+```bash
+MANIFEST=dataset/mi_reward/manifests/train_manifest.jsonl \
+SUCCESS_REFS=dataset/mi_reward/manifests/success_refs.jsonl \
+FEATURE_ROOT=dataset/mi_reward/features \
+bash mi_reward/scripts/extract_features.sh
+```
+
+---
+
+## LaWAM Backbone
+
+The sections below document the upstream LaWAM training and evaluation pipeline.
+This extension does not modify these components.
+
+### Model Preparation
+
 All commands in this section and the training sections assume the current
-directory is the `LaWAM` repository root.
+directory is the repository root.
 
 LaWAM always needs:
 
@@ -252,7 +431,7 @@ model:
   vision_model_id: weights/dinov3-vitb16-pretrain-lvd1689m
 ```
 
-## Inference
+### Inference
 
 Inference uses two environments:
 
@@ -262,9 +441,9 @@ Inference uses two environments:
 Run LIBERO first if you only need one smoke test. RoboTwin setup is separate and
 usually heavier.
 
-### LIBERO Inference
+#### LIBERO Inference
 
-#### 1. Install The LIBERO Simulator
+**1. Install the LIBERO Simulator**
 
 Install LIBERO in a separate environment following the official repository:
 
@@ -293,11 +472,11 @@ conda activate <libero_env>
 pip install mujoco==3.3.2
 ```
 
-#### 2. Run LIBERO Benchmark
+**2. Run LIBERO Benchmark**
 
 Set the policy checkpoint path. Use a released LIBERO checkpoint if available
 from [lawam_libero_sft_release](https://huggingface.co/jialei02/lawam_libero_sft_release),
-or a checkpoint produced by [LIBERO SFT](#libero-sft).
+or a checkpoint produced by LIBERO SFT.
 
 ```bash
 cd LaWAM
@@ -328,9 +507,9 @@ results/eval_runs/libero/<ckpt_alias>/<run_tag>/
   suites/<suite_name>/eval.log
 ```
 
-### RoboTwin Inference
+#### RoboTwin Inference
 
-#### 1. Install The RoboTwin Simulator
+**1. Install the RoboTwin Simulator**
 
 Install RoboTwin in a separate environment following the official repository:
 
@@ -361,7 +540,7 @@ pip install \
   omegaconf==2.3.0
 ```
 
-#### 2. Run RoboTwin Evaluation
+**2. Run RoboTwin Evaluation**
 
 Use the auto evaluation entrypoint for RoboTwin runs. It starts the LaWAM
 policy server, launches RoboTwin workers, and writes a resumable run directory.
@@ -406,7 +585,7 @@ results/eval_runs/robotwin/<ckpt_alias>__<task_config>/<run_tag>/
   tasks/<task_name>/summary.json
 ```
 
-## SFT Training
+### SFT Training
 
 SFT training uses the same Qwen3-VL and LAM files prepared in
 [Model Preparation](#model-preparation). It also needs:
@@ -429,9 +608,9 @@ or `train_lawam_distributed.sh` for multi-node jobs. Extra arguments
 are forwarded to OmegaConf, so config fields can be overridden with
 `--a.b.c value`.
 
-### LIBERO SFT
+#### LIBERO SFT
 
-#### 1. Download LIBERO SFT Data
+**1. Download LIBERO SFT Data**
 
 The preprocessed LIBERO SFT dataset is available at:
 
@@ -463,7 +642,7 @@ dataset/
     videos/
 ```
 
-#### 2. Launch LIBERO SFT
+**2. Launch LIBERO SFT**
 
 ```bash
 cd LaWAM
@@ -479,9 +658,9 @@ The output checkpoint is written under:
 results/Checkpoints/libero/<timestamp>+<run_id>/
 ```
 
-### RoboTwin SFT
+#### RoboTwin SFT
 
-#### 1. Download RoboTwin SFT Data
+**1. Download RoboTwin SFT Data**
 
 The preprocessed RoboTwin SFT dataset is available at:
 
@@ -514,7 +693,7 @@ dataset/
     videos/
 ```
 
-#### 2. Launch RoboTwin SFT
+**2. Launch RoboTwin SFT**
 
 Important RoboTwin SFT settings:
 
@@ -555,7 +734,7 @@ bash train_lawam_distributed.sh \
 
 Run the same command on every node and set `NODE_RANK` accordingly.
 
-## Checkpoint Notes
+### Checkpoint Notes
 
 Training checkpoints are regular PyTorch `.pt` files that include the model
 state and the merged training config. Evaluation scripts use the checkpoint
@@ -572,7 +751,86 @@ are valid in the new environment.
   `framework.action_model.lam_yaml_path` must point to a matching LAM checkpoint
   and YAML config.
 
+## Evaluation
+
+### Current Metrics
+
+The MI reward extension evaluates the learned reward model along several axes:
+
+| Metric | Module | Description |
+|---|---|---|
+| Pairwise ranking accuracy | `eval_reward_ranking` | Fraction of preference pairs where the reward model agrees with MI-based ordering |
+| Reward margin | `eval_reward_ranking` | Mean difference between chosen and rejected reward scores |
+| Score correlation | `eval_reward_ranking` | Pearson correlation between MI delta scores and learned reward margins |
+| Success vs. failure separation | `eval_progress_corr` | Mean score gap and AUC between successful and failed trajectories |
+| Temporal progress correlation | `eval_progress_corr` | Correlation between learned/MI scores and ground-truth temporal progress |
+
+### Planned Evaluations
+
+The following evaluation categories are planned but not yet implemented:
+
+- Success-versus-near-miss ranking
+- Reward calibration against ground-truth task success
+- Downstream policy-learning evaluation (RLPD with learned reward)
+- Comparison against pixel-space baselines (LPIPS, DINO/CLIP cosine similarity)
+- Comparison against LaWAM latent cosine similarity (without reward-model SFT)
+- Comparison against available robot reward models
+
+## Design Principles
+
+- **Modularity.** The `mi_reward/` package is self-contained and does not
+  modify the LaWAM policy training loop.
+- **No internet dependency at runtime.** Feature extractors use local weights
+  and do not download models automatically.
+- **Cached latent features.** Features are computed once and stored as `.pt`
+  files, decoupling extraction from scoring and training.
+- **Configurable feature extractor.** DINOv3 and LaWAM LAM extractors are
+  supported through a common `BaseFeatureExtractor` interface.
+- **Reproducible pseudo-label generation.** Scoring uses deterministic MI
+  estimators with fixed random seeds.
+- **Separation of concerns.** Pseudo-label construction and external benchmark
+  evaluation are independent pipeline stages.
+
+## Limitations
+
+- A reward model trained only on world-model-generated futures may learn
+  biases specific to the generating model.
+- MI in latent space is an estimator of task-relevant similarity, not exact
+  task semantics.
+- Maximizing MI-potential growth does not guarantee physical feasibility of
+  the preferred trajectory.
+- Generated success references may contain visual or physical artifacts.
+- External robot data is still required to test sim-to-real or
+  world-to-real generalization of the learned reward.
+- MI scores can be affected by encoder choice and the temporal alignment
+  between candidate and reference trajectories.
+- The current reward head uses simple mean+last pooling; transformer-based
+  or temporal-attention architectures may capture richer structure.
+
+## Roadmap
+
+Checked items are implemented and functional.
+
+- [x] LaWAM LAM feature adapter (`lawam_lam_extractor.py`)
+- [x] Gaussian correlation MI proxy (`mi_potential.py`)
+- [x] Soft-histogram MI estimator (`mi_potential.py`)
+- [x] Feature caching (`cached_feature_store.py`)
+- [x] Pseudo-preference generation (`build_preferences.py`)
+- [x] Pairwise reward-head SFT (`train_reward_sft.py`)
+- [x] LIBERO manifest builder (`build_manifest.py`)
+- [x] RoboTwin manifest builder (`build_manifest.py`)
+- [x] Ranking accuracy evaluation (`eval_reward_ranking.py`)
+- [x] Progress correlation evaluation (`eval_progress_corr.py`)
+- [ ] Task-conditioned feature preprocessing
+- [ ] Cosmos-Predict trajectory adapter
+- [ ] Downstream RL/RLPD integration with learned reward
+- [ ] Real-robot reward validation
+- [ ] Transformer-based reward head with temporal attention
+- [ ] Multi-reference MI aggregation strategies
+
 ## Citation
+
+If you use LaWAM in your research, please cite:
 
 ```bibtex
 @misc{chen2026lawam,
@@ -587,8 +845,7 @@ are valid in the new environment.
 
 ## Acknowledgements
 
-This codebase is based on StarVLA and retains its MIT license. It also builds on
-open-source robotics and VLM components including LeRobot, Qwen-VL, DINO,
-LIBERO, and RoboTwin.
-#   M I - d i r e c t i o n a l - W A M - r e w a r d - m o d e l - p r e t r a i n  
- 
+This codebase is based on StarVLA and retains its MIT license. The MI-directional
+reward pretraining extension is developed within the RLinf/LaWAM ecosystem. The
+project builds on open-source robotics and VLM components including LeRobot,
+Qwen-VL, DINO, LIBERO, and RoboTwin.
