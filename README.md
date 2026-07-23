@@ -235,8 +235,7 @@ mi_reward/                 MI-directional reward pretraining extension
 ├── evaluation/            Ranking accuracy and progress correlation evaluation
 └── scripts/               Shell wrappers for the full pipeline
 tests/                     Smoke test for the MI reward pipeline
-requirements.txt           Python dependencies
-pyproject.toml             Package metadata and build configuration
+requirements/              Environment setup (install.sh, requirements.txt, Makefile)
 train_lawam.sh             Single-node LaWAM training entrypoint
 train_lawam_distributed.sh Multi-node LaWAM training entrypoint
 ```
@@ -251,18 +250,23 @@ Clone the repository and create the training environment:
 git clone https://github.com/RLinf/LaWAM.git LaWAM
 cd LaWAM
 
+# Automated install with uv
+bash requirements/install.sh
+
+# Activate
+source .venv/bin/activate
+```
+
+Or manually:
+
+```bash
 conda create -n lawam python=3.10 -y
 conda activate lawam
-
 pip install -U pip
-pip install -r requirements.txt
+pip install -r requirements/requirements.txt
 pip install flash-attn==2.8.3 --no-build-isolation
 pip install -e .
 ```
-
-If the local CUDA/PyTorch build is incompatible with `flash-attn==2.8.3`,
-install a matching `flash-attn` wheel manually and then re-run
-`pip install -e .`.
 
 Quick import check:
 
@@ -279,7 +283,7 @@ PY
 
 The `mi_reward/` package is installed by the same `pip install -e .` command
 above. Additional runtime dependencies (`Pillow`, `torchvision`, `imageio`,
-`PyYAML`) are already included in `requirements.txt`.
+`PyYAML`) are already included in `requirements/requirements.txt`.
 
 No additional installation steps are required beyond the LaWAM backbone setup.
 
