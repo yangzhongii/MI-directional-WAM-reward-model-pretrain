@@ -212,7 +212,10 @@ This is more precisely **preference-based reward-model fine-tuning**; we use
 | Shell script wrappers | Implemented | Scripts under `mi_reward/scripts/` |
 | Smoke test | Implemented | Synthetic end-to-end pipeline test |
 | Unit tests | Implemented | Soft histogram, temporal alignment, reward loss tests |
-| Cosmos-Predict data adapter | Planned | No Cosmos integration code exists |
+| Cosmos-Predict data adapter | Implemented | CLI-based adapter (`mi_reward/data/cosmos_generator.py`) |
+| MI Potential Field | Implemented | Unified module (`mi_reward/scoring/mi_potential_field.py`) with Dame B-spline + gaussian + histogram backends |
+| Directional reward distillation | Implemented | `train_reward_distill()` trains StatePotentialRewardModel with rank + potential + direction loss |
+| Ablation reward functions | Implemented | latent_distance, cosine_similarity, static MI, directional MI (interchangeable via `MIBackend`) |
 | Task-conditioned feature preprocessing | Planned | Current extractors pass task as unused parameter |
 | Downstream RL/RLPD integration | Planned | Reward-head handoff into policy training not yet implemented |
 | Real-robot reward validation | Planned | No real-robot evaluation pipeline |
@@ -222,20 +225,22 @@ This is more precisely **preference-based reward-model fine-tuning**; we use
 ```text
 starVLA/                   Core LaWAM model, dataloaders, training loop, configs
 latent_action_model/       LaWM / latent-action model code and utilities
-deployment/                Policy server implementations for evaluation
+deployment/                Policy servers + Franka FCI real-world controller
+├── model_server/           HTTP/TCP policy servers (Franka, Isaac-GR00T)
+└── realworld/              Franka controller, ROS bridge, client (standalone)
 examples/LIBERO/           LIBERO evaluation scripts
 examples/Robotwin/         RoboTwin evaluation scripts and native policy adapter
 mi_reward/                 MI-directional reward pretraining extension
 ├── configs/               Central YAML configuration
-├── data/                  Schema definitions, manifest builders, datasets
+├── data/                  Schema definitions, manifest builders, Cosmos adapter, datasets
 ├── features/              Feature extractors (DINOv3, LaWAM LAM) and cache store
 ├── scoring/               MI potential, trajectory delta scoring, preference builder
 ├── models/                Trajectory reward head
 ├── training/              Pairwise ranking loss, collator, SFT training loop
 ├── evaluation/            Ranking accuracy and progress correlation evaluation
 └── scripts/               Shell wrappers for the full pipeline
-tests/                     Smoke test for the MI reward pipeline
-requirements/              Environment setup (install.sh, requirements.txt, Makefile)
+tests/                     Smoke tests (full pipeline + MI backends + ablation)
+requirements/              Automated env setup (--mi-cosmos for A800, --rlpd for 4090+NUC)
 train_lawam.sh             Single-node LaWAM training entrypoint
 train_lawam_distributed.sh Multi-node LaWAM training entrypoint
 ```
@@ -902,7 +907,9 @@ Checked items are implemented and functional.
 - [x] Ranking accuracy evaluation (`eval_reward_ranking.py`)
 - [x] Progress correlation evaluation (`eval_progress_corr.py`)
 - [ ] Task-conditioned feature preprocessing
-- [ ] Cosmos-Predict trajectory adapter
+- [x] Cosmos-Predict trajectory adapter
+- [x] MI Directional Potential Field (unified module, multi-backend)
+- [x] Directional reward distillation (rank + potential + direction losses)
 - [ ] Downstream RL/RLPD integration with learned reward
 - [ ] Real-robot reward validation
 - [ ] Transformer-based reward head with temporal attention
