@@ -2,8 +2,8 @@
 # Versions are taken from the current Python 3.10 environment.
 
 # PyTorch stack
-torch==2.6.0
-torchvision==0.21.0
+torch==2.7.0
+torchvision==0.22.0
 accelerate==1.13.0
 # deepspeed==0.16.9
 
@@ -20,7 +20,7 @@ accelerate==1.13.0
 transformers==5.2.0
 tokenizers==0.22.2
 safetensors==0.7.0
-huggingface_hub==1.7.1
+huggingface_hub[cli]==1.7.1
 datasets==4.5.0
 diffusers==0.36.0
 # qwen-vl-utils==0.0.14

@@ -243,6 +243,7 @@ wandb/
 results/
 outputs/
 tmp/
+weights/
 *.code-workspace
 *.out
 *.log

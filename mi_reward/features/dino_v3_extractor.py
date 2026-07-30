@@ -28,6 +28,13 @@ class DINOv3FeatureExtractor(BaseFeatureExtractor):
         path = Path(model_path)
         if not path.exists():
             return None
+        # HF-format directory (contains config.json + model.safetensors)
+        if path.is_dir() and (path / "config.json").exists():
+            from transformers import AutoModel
+            model = AutoModel.from_pretrained(str(path), trust_remote_code=True)
+            model.eval().to(self.device)
+            return model
+        # Single-file checkpoint (.pt / .jit)
         try:
             model = torch.jit.load(str(path), map_location=self.device)
         except Exception:
@@ -54,7 +61,7 @@ class DINOv3FeatureExtractor(BaseFeatureExtractor):
         return transform(image).unsqueeze(0).to(self.device)
 
     def _fallback_feature(self, image: torch.Tensor) -> torch.Tensor:
-        flat = image.flatten(start_dim=2)
+        flat = image.float().flatten(start_dim=2)
         means = flat.mean(dim=-1)
         stds = flat.std(dim=-1)
         mins = flat.min(dim=-1).values
@@ -68,6 +75,13 @@ class DINOv3FeatureExtractor(BaseFeatureExtractor):
         if self.model is None:
             return self._fallback_feature(image).cpu()
         output = self.model(image)
+        # HF AutoModel: BaseModelOutputWithPooling → .pooler_output [B, D]
+        if hasattr(output, "pooler_output") and output.pooler_output is not None:
+            return output.pooler_output.float().squeeze(0).cpu()
+        # HF AutoModel without pooling: .last_hidden_state [B, N, D]
+        if hasattr(output, "last_hidden_state"):
+            return output.last_hidden_state.float().squeeze(0).mean(dim=0).cpu()
+        # Legacy: dict with "x_norm_clstoken" key
         if isinstance(output, dict):
             output = output.get("x_norm_clstoken", next(iter(output.values())))
         if isinstance(output, (tuple, list)):

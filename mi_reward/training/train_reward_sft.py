@@ -85,8 +85,151 @@ def train_reward_sft(
     return config
 
 
+def train_reward_distill(
+    preferences: str | Path,
+    feature_root: str | Path,
+    output_dir: str | Path,
+    batch_size: int = 8,
+    epochs: int = 5,
+    lr: float = 1e-4,
+    hidden_dim: int = 256,
+    architecture: str = "gru",
+    lambda_rank: float = 1.0,
+    lambda_potential: float = 1.0,
+    lambda_direction: float = 0.5,
+    gamma: float = 0.99,
+    seed: int = 0,
+    device: str = "cuda",
+) -> dict[str, object]:
+    """Train StatePotentialRewardModel via directional reward distillation.
+
+    The teacher (MIPotentialField) provides per-frame MI potentials Phi_t.
+    The student (StatePotentialRewardModel) predicts per-frame V(o_t, g).
+    Distillation loss = rank_loss + potential_loss + direction_loss.
+    Deployment reward = gamma * V(o_{t+1}) - V(o_t).
+    """
+    random.seed(seed)
+    torch.manual_seed(seed)
+    device_obj = torch.device(device if device == "cuda" and torch.cuda.is_available() else "cpu")
+
+    from mi_reward.data.preference_dataset import PreferenceFeatureDataset
+    from mi_reward.models.state_potential_model import StatePotentialRewardModel
+    from mi_reward.training.collator import PreferenceCollator
+    from mi_reward.training.losses import DistillationLoss
+    from mi_reward.scoring.mi_potential_field import MIPotentialField, MIBackend
+
+    dataset = PreferenceFeatureDataset(preferences, feature_root)
+    if len(dataset) == 0:
+        raise ValueError("No preference pairs found.")
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=PreferenceCollator())
+
+    first = dataset[0]["chosen_features"].reshape(dataset[0]["chosen_features"].shape[0], -1)
+    input_dim = first.shape[-1]
+
+    model = StatePotentialRewardModel(
+        input_dim=input_dim, hidden_dim=hidden_dim,
+        architecture=architecture,
+    ).to(device_obj)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    loss_fn = DistillationLoss(
+        lambda_rank=lambda_rank,
+        lambda_potential=lambda_potential,
+        lambda_direction=lambda_direction,
+    )
+
+    # Teacher: MI potential field
+    mi_field = MIPotentialField(backend=MIBackend.DAME_BSPLINE, gamma=gamma)
+    mi_field._mi.to(device_obj)
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    log_path = out / "train_log.jsonl"
+
+    with log_path.open("w", encoding="utf-8") as log_f:
+        global_step = 0
+        for epoch in range(epochs):
+            total_loss = 0.0
+            total_count = 0
+            for batch in loader:
+                chosen = batch["chosen_features"].to(device_obj)
+                rejected = batch["rejected_features"].to(device_obj)
+                chosen_mask = batch["chosen_mask"].to(device_obj)
+                rejected_mask = batch["rejected_mask"].to(device_obj)
+
+                # Student predictions: per-frame potentials
+                student_chosen = model(chosen)  # [B, T]
+                student_rejected = model(rejected)
+
+                # Teacher: compute MI potentials
+                with torch.no_grad():
+                    B = chosen.shape[0]
+                    phi_chosen = torch.zeros_like(student_chosen)
+                    phi_rejected = torch.zeros_like(student_rejected)
+                    for b in range(B):
+                        c = chosen[b][chosen_mask[b]]  # [T_valid, D]
+                        r = rejected[b][rejected_mask[b]]
+                        if c.shape[0] >= 2:
+                            phi_chosen[b, :c.shape[0]] = mi_field.potential_batch(c, c[-1])
+                        if r.shape[0] >= 2:
+                            phi_rejected[b, :r.shape[0]] = mi_field.potential_batch(r, r[-1])
+
+                # Trajectory-level rewards (aggregated potential difference)
+                chosen_rewards = model.compute_trajectory_score(chosen, gamma=gamma)
+                rejected_rewards = model.compute_trajectory_score(rejected, gamma=gamma)
+
+                # Combined distillation loss (ensure all tensors on same device)
+                cuda = chosen.device
+                result = loss_fn(
+                    student_potentials_chosen=student_chosen,
+                    student_potentials_rejected=student_rejected,
+                    teacher_phi_chosen=phi_chosen,
+                    teacher_phi_rejected=phi_rejected,
+                    chosen_rewards=chosen_rewards,
+                    rejected_rewards=rejected_rewards,
+                    chosen_confidence=torch.ones(B, device=cuda),
+                    rejected_confidence=torch.ones(B, device=cuda),
+                    score_margin=(chosen_rewards - rejected_rewards).to(cuda),
+                    mask_chosen=chosen_mask,
+                    mask_rejected=rejected_mask,
+                )
+                loss = result["total"]
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                optimizer.step()
+
+                total_loss += float(loss.item()) * B
+                total_count += B
+                log_f.write(json.dumps({
+                    "step": global_step, "epoch": epoch,
+                    "loss": float(loss.item()),
+                    "rank": float(result["rank"].item()) if torch.is_tensor(result["rank"]) else float(result["rank"]),
+                    "potential": float(result["potential"].item()) if torch.is_tensor(result["potential"]) else float(result["potential"]),
+                    "direction": float(result["direction"].item()) if torch.is_tensor(result["direction"]) else float(result["direction"]),
+                }) + "\n")
+                global_step += 1
+            log_f.write(json.dumps({
+                "epoch": epoch,
+                "mean_loss": total_loss / max(total_count, 1),
+            }) + "\n")
+
+    config = {
+        "preferences": str(preferences), "feature_root": str(feature_root),
+        "batch_size": batch_size, "epochs": epochs, "lr": lr,
+        "hidden_dim": hidden_dim, "architecture": architecture,
+        "input_dim": input_dim, "gamma": gamma, "seed": seed,
+        "lambda_rank": lambda_rank, "lambda_potential": lambda_potential,
+        "lambda_direction": lambda_direction,
+        "model_class": "StatePotentialRewardModel",
+    }
+    _write_yaml_like(out / "train_config.yaml", config)
+    torch.save({"model_state_dict": model.state_dict(), "config": config}, out / "pytorch_model.pt")
+    return config
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train an MVP trajectory reward head with pairwise ranking SFT.")
+    parser = argparse.ArgumentParser(description="Train a reward model with pairwise ranking SFT or directional distillation.")
+    parser.add_argument("--mode", default="ranking", choices=["ranking", "distill"],
+                        help="ranking: TrajectoryRewardHead with pairwise loss. distill: StatePotentialRewardModel with MI directional distillation.")
     parser.add_argument("--preferences", required=True)
     parser.add_argument("--feature_root", required=True)
     parser.add_argument("--output_dir", required=True)
@@ -94,10 +237,20 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--hidden_dim", type=int, default=256)
+    parser.add_argument("--architecture", default="gru", choices=["mlp", "gru", "transformer"])
+    parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument("--lambda_rank", type=float, default=1.0)
+    parser.add_argument("--lambda_potential", type=float, default=1.0)
+    parser.add_argument("--lambda_direction", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
-    train_reward_sft(**vars(args))
+
+    kwargs = {k: v for k, v in vars(args).items() if k != "mode"}
+    if args.mode == "distill":
+        train_reward_distill(**kwargs)
+    else:
+        train_reward_sft(**kwargs)
 
 
 if __name__ == "__main__":

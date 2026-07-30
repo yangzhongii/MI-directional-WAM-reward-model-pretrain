@@ -15,8 +15,19 @@ from mi_reward.scoring.trajectory_score import (
     score_trajectory,
 )
 from mi_reward.scoring.build_preferences import score_manifest, build_preference_pairs
+from mi_reward.scoring.mi_potential_field import (
+    MIPotentialField,
+    MIBackend,
+    BaseLatentEncoder,
+    PotentialResult,
+    DINOv3LatentEncoder,
+    latent_distance_reward,
+    cosine_similarity_reward,
+    REWARD_FUNCTIONS,
+)
 
 __all__ = [
+    # Legacy
     "compute_mi",
     "DameSoftHistogramMI",
     "apply_correspondence",
@@ -29,4 +40,13 @@ __all__ = [
     "score_trajectory",
     "score_manifest",
     "build_preference_pairs",
+    # New unified API
+    "MIPotentialField",
+    "MIBackend",
+    "BaseLatentEncoder",
+    "PotentialResult",
+    "DINOv3LatentEncoder",
+    "latent_distance_reward",
+    "cosine_similarity_reward",
+    "REWARD_FUNCTIONS",
 ]

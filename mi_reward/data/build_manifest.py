@@ -216,9 +216,89 @@ def build_robotwin_manifest(
     return examples
 
 
+def build_cosmos_manifest(
+    task_specs: list[dict[str, str]],
+    output_dir: str | Path,
+    *,
+    num_candidates_per_task: int = 10,
+    num_frames: int = 16,
+    split: str = "train",
+    source: str = "cosmos_predict",
+    seed: int = 42,
+) -> tuple[Path, Path]:
+    """Generate candidate futures with a world model and build manifests.
+
+    Uses ``MockFutureGenerator`` by default (no Cosmos dependency).
+    To use Cosmos-Predict, pass a ``CosmosPredictGenerator`` instance and
+    set ``use_cosmos=True``.
+
+    Args:
+        task_specs: list of {"task": str, "init_frame": path} dicts.
+        output_dir: root for generated frames + manifest files.
+        num_candidates_per_task: how many futures to generate per task.
+        num_frames: frames per trajectory.
+        split: manifest split name.
+        source: manifest source tag.
+        seed: RNG seed for deterministic generation.
+
+    Returns:
+        (manifest_path, success_refs_path)
+    """
+    from mi_reward.data.cosmos_generator import MockFutureGenerator, save_video_frames
+    from mi_reward.data.schema import SuccessReference
+
+    root = Path(output_dir)
+    frame_root = root / "frames"
+    manifest_dir = root / "manifests"
+    frame_root.mkdir(parents=True, exist_ok=True)
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+
+    generator = MockFutureGenerator(seed=seed)
+    examples: list[TrajectoryExample] = []
+    refs: list[SuccessReference] = []
+
+    for spec in task_specs:
+        task = spec["task"]
+        init_path = Path(spec["init_frame"])
+        if not init_path.exists():
+            raise FileNotFoundError(f"Initial frame not found: {init_path}")
+        init_img = np.array(Image.open(init_path).convert("RGB"))
+
+        # Generate candidates
+        videos = generator.generate_candidates(
+            init_img, task, num_candidates=num_candidates_per_task, num_frames=num_frames,
+        )
+        for i, video in enumerate(videos):
+            traj_id = f"cosmos/{task.replace(' ', '_')}/candidate_{i:03d}"
+            out_dir = frame_root / traj_id.replace("/", "__")
+            frames = save_video_frames(video, out_dir)
+            examples.append(TrajectoryExample(
+                traj_id=traj_id, task=task, frames=frames,
+                source=source, split=split,
+                metadata={"candidate_index": i, "generator": "mock_cosmos"},
+            ))
+
+        # Generate success reference
+        ref_video = generator.generate_reference(init_img, task, num_frames)
+        ref_id = f"cosmos/{task.replace(' ', '_')}/success_ref"
+        ref_dir = frame_root / ref_id.replace("/", "__")
+        ref_frames = save_video_frames(ref_video, ref_dir)
+        refs.append(SuccessReference(ref_id=ref_id, task=task, frames=ref_frames))
+
+    manifest_path = manifest_dir / "train_manifest.jsonl"
+    refs_path = manifest_dir / "success_refs.jsonl"
+    write_jsonl(str(manifest_path), examples)
+    write_jsonl(str(refs_path), refs)
+    return manifest_path, refs_path
+
+
+import numpy as np  # noqa: E402
+from PIL import Image     # noqa: E402
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build MI reward manifests from frames or LaWAM eval outputs.")
-    parser.add_argument("--source_type", choices=["frames", "libero", "robotwin"], default="frames")
+    parser.add_argument("--source_type", choices=["frames", "libero", "robotwin", "cosmos"], default="frames")
     parser.add_argument("--run_dir", default=None)
     parser.add_argument("--frame_root", default=None)
     parser.add_argument("--output", required=True)
@@ -227,6 +307,12 @@ def main() -> None:
     parser.add_argument("--frame_output_root", default=None)
     parser.add_argument("--fps", type=float, default=2.0)
     parser.add_argument("--overwrite_frames", action="store_true")
+    # Cosmos-specific args
+    parser.add_argument("--task_specs", default=None, help="JSONL task specs for --source_type cosmos")
+    parser.add_argument("--num_candidates", type=int, default=10)
+    parser.add_argument("--num_frames", type=int, default=16)
+    parser.add_argument("--output_dir", default=None)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
     if args.source_type == "frames":
         if args.frame_root is None:
@@ -244,7 +330,7 @@ def main() -> None:
             split=args.split,
             overwrite_frames=args.overwrite_frames,
         )
-    else:
+    elif args.source_type == "robotwin":
         if args.run_dir is None:
             parser.error("--run_dir is required for --source_type robotwin")
         frame_output_root = args.frame_output_root or "dataset/mi_reward/extracted_frames/robotwin"
@@ -256,6 +342,23 @@ def main() -> None:
             split=args.split,
             overwrite_frames=args.overwrite_frames,
         )
+    elif args.source_type == "cosmos":
+        import json as _json
+        if args.task_specs is None or args.output_dir is None:
+            parser.error("--task_specs and --output_dir are required for --source_type cosmos")
+        task_specs = _json.loads(Path(args.task_specs).read_text(encoding="utf-8"))
+        out = Path(args.output_dir)
+        manifest_path, refs_path = build_cosmos_manifest(
+            task_specs, out,
+            num_candidates_per_task=args.num_candidates,
+            num_frames=args.num_frames,
+            split=args.split,
+            source=args.source,
+            seed=args.seed,
+        )
+        print(f"Wrote manifest to {manifest_path}")
+        print(f"Wrote success refs to {refs_path}")
+        return
     print(f"Wrote {len(examples)} trajectories to {args.output}")
 
 
