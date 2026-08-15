@@ -9,18 +9,30 @@ from mi_reward.features.base_extractor import BaseFeatureExtractor
 
 
 class DINOv3FeatureExtractor(BaseFeatureExtractor):
-    """Local-weight DINO-style extractor with a deterministic image-stat fallback.
+    """Local-weight DINO-style extractor with an opt-in smoke-test fallback.
 
     The class intentionally avoids downloading weights at runtime. If ``model_path``
     points to a TorchScript or ``torch.load``-able module, that model is used.
-    Otherwise it returns compact deterministic RGB statistics so smoke tests and
-    data plumbing can run without external assets.
+    Otherwise it returns compact deterministic RGB statistics for smoke tests.
+    Production callers must set ``strict=True``; this prevents accidentally
+    training a reward model on the fallback representation.
     """
 
-    def __init__(self, model_path: str | None = None, device: str = "cpu", image_size: int = 224):
+    def __init__(
+        self,
+        model_path: str | None = None,
+        device: str = "cpu",
+        image_size: int = 224,
+        strict: bool = False,
+    ):
         self.device = torch.device(device if device == "cuda" and torch.cuda.is_available() else "cpu")
         self.image_size = image_size
+        self.strict = strict
         self.model = self._load_model(model_path)
+        if self.strict and self.model is None:
+            raise RuntimeError(
+                "DINOv3 weights are required in strict mode. Provide an existing local model_path."
+            )
 
     def _load_model(self, model_path: str | None) -> nn.Module | None:
         if not model_path:
@@ -70,20 +82,28 @@ class DINOv3FeatureExtractor(BaseFeatureExtractor):
 
     @torch.no_grad()
     def extract_frame(self, frame_path: str, task: str) -> torch.Tensor:
+        return self.extract_frame_tokens(frame_path, task).mean(dim=0)
+
+    @torch.no_grad()
+    def extract_frame_tokens(self, frame_path: str, task: str) -> torch.Tensor:
         del task
         image = self._load_image(frame_path)
         if self.model is None:
-            return self._fallback_feature(image).cpu()
+            return self._fallback_feature(image).cpu().unsqueeze(0)
         output = self.model(image)
         # HF AutoModel: BaseModelOutputWithPooling → .pooler_output [B, D]
-        if hasattr(output, "pooler_output") and output.pooler_output is not None:
-            return output.pooler_output.float().squeeze(0).cpu()
         # HF AutoModel without pooling: .last_hidden_state [B, N, D]
         if hasattr(output, "last_hidden_state"):
-            return output.last_hidden_state.float().squeeze(0).mean(dim=0).cpu()
+            return output.last_hidden_state.float().squeeze(0).cpu()
+        if hasattr(output, "pooler_output") and output.pooler_output is not None:
+            return output.pooler_output.float().squeeze(0).cpu()
         # Legacy: dict with "x_norm_clstoken" key
         if isinstance(output, dict):
             output = output.get("x_norm_clstoken", next(iter(output.values())))
         if isinstance(output, (tuple, list)):
             output = output[0]
-        return output.float().reshape(output.shape[0], -1).mean(dim=0).cpu()
+        if output.ndim == 3:
+            return output.float().squeeze(0).cpu()
+        if output.ndim == 1:
+            return output.float().unsqueeze(0).cpu()
+        return output.float().reshape(output.shape[0], -1).cpu()

@@ -29,6 +29,13 @@ def huber_loss(
     return torch.where(abs_err <= delta, quadratic, linear).mean()
 
 
+def _huber_elementwise(pred: torch.Tensor, target: torch.Tensor, delta: float) -> torch.Tensor:
+    abs_err = (pred - target).abs()
+    quadratic = 0.5 * abs_err.square()
+    linear = delta * (abs_err - 0.5 * delta)
+    return torch.where(abs_err <= delta, quadratic, linear)
+
+
 def normalize_tensor(
     x: torch.Tensor,
     eps: float = 1e-8,
@@ -64,26 +71,21 @@ def potential_distillation_loss(
     teacher_norm = torch.zeros_like(teacher_phi)
 
     for b in range(B):
-        s_valid = student_potentials[b]
-        t_valid = teacher_phi[b]
-        if mask is not None:
-            valid = mask[b]
-            s_valid = s_valid[valid]
-            t_valid = t_valid[valid]
+        valid = mask[b] if mask is not None else torch.ones(T, dtype=torch.bool, device=student_potentials.device)
+        s_valid = student_potentials[b][valid]
+        t_valid = teacher_phi[b][valid]
         if s_valid.numel() < 2:
-            student_norm[b] = student_potentials[b]
-            teacher_norm[b] = teacher_phi[b]
+            student_norm[b, valid] = s_valid
+            teacher_norm[b, valid] = t_valid
         else:
-            student_norm[b] = normalize_tensor(student_potentials[b])
-            teacher_norm[b] = normalize_tensor(teacher_phi[b].detach())
+            student_norm[b, valid] = normalize_tensor(s_valid)
+            teacher_norm[b, valid] = normalize_tensor(t_valid.detach())
 
-    loss = huber_loss(student_norm, teacher_norm, delta=huber_delta)
-
-    if mask is not None:
-        valid_mask = mask.float()
-        loss = (huber_loss(student_norm, teacher_norm, delta=huber_delta) * valid_mask).sum() / valid_mask.sum().clamp_min(1)
-
-    return loss
+    elementwise = _huber_elementwise(student_norm, teacher_norm, delta=huber_delta)
+    if mask is None:
+        return elementwise.mean()
+    valid_mask = mask.float()
+    return (elementwise * valid_mask).sum() / valid_mask.sum().clamp_min(1)
 
 
 def directional_difference_loss(
@@ -122,8 +124,8 @@ def directional_difference_loss(
 
     if delta_mask is not None:
         # Normalize per trajectory
-        loss_sum = 0.0
-        count = 0
+        loss_sum = torch.zeros((), device=student_potentials.device, dtype=student_potentials.dtype)
+        count = torch.zeros((), device=student_potentials.device, dtype=student_potentials.dtype)
         for b in range(B):
             valid = delta_mask[b]
             if valid.sum() < 2:
@@ -133,7 +135,7 @@ def directional_difference_loss(
             s_norm = normalize_tensor(s_delta)
             t_norm = normalize_tensor(t_delta)
             loss_sum += huber_loss(s_norm, t_norm, delta=huber_delta) * valid.sum().float()
-            count += valid.sum().float()
+            count = count + valid.sum().float()
         return loss_sum / count.clamp_min(1)
     else:
         # Normalize each trajectory

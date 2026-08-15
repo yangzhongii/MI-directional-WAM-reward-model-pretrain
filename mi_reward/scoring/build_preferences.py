@@ -8,6 +8,7 @@ from typing import Any
 
 from mi_reward.data.schema import PreferencePair, SuccessReference, TrajectoryExample, read_jsonl, write_jsonl
 from mi_reward.features.cached_feature_store import CachedFeatureStore
+from mi_reward.relations.sequence import load_relation_sequence, relation_progress_potential
 from mi_reward.scoring.trajectory_score import score_trajectory
 
 
@@ -22,34 +23,83 @@ def _group_by_task(items):
     return grouped
 
 
+def _group_by_task_and_goal(items):
+    grouped = {}
+    for item in items:
+        grouped.setdefault((item.task, getattr(item, "goal_ref_id", None)), []).append(item)
+    return grouped
+
+
+def _requires_verification(traj: TrajectoryExample) -> bool:
+    return traj.source == "cosmos_action_cond" or traj.candidate_provenance is not None
+
+
 def score_manifest(
     manifest: str | Path,
     success_refs: str | Path,
     feature_root: str | Path,
     gamma: float,
     mi_mode: str,
+    relation_weight: float = 0.0,
+    use_token_features: bool = False,
 ) -> list[dict[str, object]]:
     store = CachedFeatureStore(feature_root)
     trajectories = read_jsonl(manifest, TrajectoryExample)
     refs_by_task = _group_by_task(read_jsonl(success_refs, SuccessReference))
     scored = []
     for traj in trajectories:
-        refs = refs_by_task.get(traj.task, [])
-        if not refs:
+        if _requires_verification(traj) and not (traj.verification and traj.verification.accepted):
             continue
-        candidate_features = store.load(traj.traj_id)
-        ref_scores = [
-            score_trajectory(candidate_features, store.load(ref.ref_id), gamma=gamma, mi_mode=mi_mode)
+        refs = refs_by_task.get(traj.task, [])
+        if traj.goal_ref_id:
+            refs = [ref for ref in refs if ref.ref_id == traj.goal_ref_id]
+        if not refs:
+            if traj.goal_ref_id:
+                raise ValueError(
+                    f"Trajectory {traj.traj_id} declares unknown goal_ref_id {traj.goal_ref_id!r} for task {traj.task!r}."
+                )
+            continue
+        feature_id = traj.traj_id + "_tokens" if use_token_features else traj.traj_id
+        candidate_features = store.load(feature_id)
+        scored_refs = [
+            (
+                ref,
+                score_trajectory(
+                    candidate_features,
+                    store.load(ref.ref_id + "_tokens" if use_token_features else ref.ref_id),
+                    gamma=gamma,
+                    mi_mode=mi_mode,
+                ),
+            )
             for ref in refs
         ]
-        best = max(ref_scores, key=lambda item: float(item["score_delta"]))
+        best_ref, best = max(scored_refs, key=lambda item: float(item[1]["score_delta"]))
+        relation_score = 0.0
+        relation_phi: list[float] | None = None
+        if relation_weight:
+            if not traj.relation_path:
+                raise ValueError(f"relation_weight requires relation_path for {traj.traj_id}.")
+            relation = load_relation_sequence(traj.relation_path)
+            relation_values = relation_progress_potential(relation.values, relation.names)
+            if relation_values.shape[0] != candidate_features.shape[0]:
+                raise ValueError(
+                    f"Relation/frame length mismatch while scoring {traj.traj_id}: "
+                    f"{relation_values.shape[0]} vs {candidate_features.shape[0]}."
+                )
+            relation_phi = [float(value) for value in relation_values.tolist()]
+            if relation_values.numel() >= 2:
+                relation_score = float((gamma * relation_values[1:] - relation_values[:-1]).mean().item())
         scored.append(
             {
                 "traj_id": traj.traj_id,
                 "task": traj.task,
-                "score_delta": float(best["score_delta"]),
+                "goal_ref_id": best_ref.ref_id,
+                "score_delta": float(best["score_delta"]) + relation_weight * relation_score,
                 "score_mean": float(best["score_mean"]),
                 "phi": best["phi"],
+                "relation_phi": relation_phi,
+                "relation_score": relation_score,
+                "confidence": 1.0 if not _requires_verification(traj) else 1.0,
             }
         )
     return scored
@@ -83,9 +133,9 @@ def build_preference_pairs(
         list of PreferencePair with extended metadata
     """
     rng = random.Random(seed)
-    by_task = _group_by_task([type("Scored", (), item) for item in scored])
+    by_task = _group_by_task_and_goal([type("Scored", (), item) for item in scored])
     pairs: list[PreferencePair] = []
-    for task, task_items in by_task.items():
+    for (task, goal_ref_id), task_items in by_task.items():
         ranked = sorted(task_items, key=lambda item: float(getattr(item, score_field, 0.0)), reverse=True)
         top = ranked[:top_k]
         bottom = ranked[-bottom_k:] if bottom_k > 0 else []
@@ -113,6 +163,10 @@ def build_preference_pairs(
                         chosen_score=chosen_score,
                         rejected_score=rejected_score,
                         score_type=f"temporally_aligned_dame_mi_{teacher_version}",
+                        goal_ref_id=goal_ref_id,
+                        chosen_confidence=chosen_conf,
+                        rejected_confidence=rejected_conf,
+                        teacher_version=teacher_version,
                     )
                 )
 
@@ -139,9 +193,9 @@ def build_adjacent_pairs(
     Alternative to top-vs-bottom: uses neighbors in the ranking.
     """
     rng = random.Random(seed)
-    by_task = _group_by_task([type("Scored", (), item) for item in scored])
+    by_task = _group_by_task_and_goal([type("Scored", (), item) for item in scored])
     pairs: list[PreferencePair] = []
-    for task, task_items in by_task.items():
+    for (task, goal_ref_id), task_items in by_task.items():
         ranked = sorted(task_items, key=lambda item: float(getattr(item, score_field, 0.0)), reverse=True)
         task_pairs = []
         for i in range(len(ranked) - 1):
@@ -165,6 +219,10 @@ def build_adjacent_pairs(
                     chosen_score=chosen_score,
                     rejected_score=rejected_score,
                     score_type=f"temporally_aligned_dame_mi_{teacher_version}",
+                    goal_ref_id=goal_ref_id,
+                    chosen_confidence=chosen_conf,
+                    rejected_confidence=rejected_conf,
+                    teacher_version=teacher_version,
                 )
             )
 
@@ -193,9 +251,14 @@ def main() -> None:
     parser.add_argument("--score_field", default="score_delta")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--mi_mode", default="gaussian_mi_proxy", choices=["gaussian_mi_proxy", "histogram_mi"])
+    parser.add_argument("--relation_weight", type=float, default=0.0)
+    parser.add_argument("--token_features", action="store_true", help="Score native [T, K, D] LaWAM visual tokens.")
     args = parser.parse_args()
 
-    scored = score_manifest(args.manifest, args.success_refs, args.feature_root, args.gamma, args.mi_mode)
+    scored = score_manifest(
+        args.manifest, args.success_refs, args.feature_root, args.gamma, args.mi_mode,
+        relation_weight=args.relation_weight, use_token_features=args.token_features,
+    )
 
     if args.pair_mode == "adjacent":
         pairs = build_adjacent_pairs(

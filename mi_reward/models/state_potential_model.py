@@ -159,6 +159,7 @@ class StatePotentialRewardModel(nn.Module):
         self,
         frame_or_token_features: torch.Tensor,
         task_features: torch.Tensor | None = None,
+        mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Compute per-timestep scalar potentials.
 
@@ -171,6 +172,8 @@ class StatePotentialRewardModel(nn.Module):
         """
         # Pool tokens if needed
         pooled = self._pool_tokens(frame_or_token_features)  # [B, T, D]
+        if mask is None:
+            mask = torch.ones(pooled.shape[:2], dtype=torch.bool, device=pooled.device)
 
         # Task conditioning
         if self.use_task_conditioning and task_features is not None and self.task_proj is not None:
@@ -181,21 +184,29 @@ class StatePotentialRewardModel(nn.Module):
             hidden = self.temporal(pooled)  # [B, T, hidden_dim]
             potentials = self.potential_head(hidden).squeeze(-1)  # [B, T]
         elif self.architecture == "gru":
-            outputs, _ = self.gru(pooled)  # [B, T, hidden_dim]
+            lengths = mask.long().sum(dim=1).clamp_min(1).cpu()
+            packed = nn.utils.rnn.pack_padded_sequence(
+                pooled, lengths, batch_first=True, enforce_sorted=False
+            )
+            packed_outputs, _ = self.gru(packed)
+            outputs, _ = nn.utils.rnn.pad_packed_sequence(
+                packed_outputs, batch_first=True, total_length=pooled.shape[1]
+            )
             potentials = self.potential_head(outputs).squeeze(-1)  # [B, T]
         elif self.architecture == "transformer":
-            outputs = self.transformer(pooled)  # [B, T, D]
+            outputs = self.transformer(pooled, src_key_padding_mask=~mask)  # [B, T, D]
             potentials = self.potential_head(outputs).squeeze(-1)  # [B, T]
         else:
             raise RuntimeError(f"Unknown architecture: {self.architecture}")
 
-        return potentials
+        return potentials.masked_fill(~mask, 0.0)
 
     def compute_trajectory_score(
         self,
         frame_or_token_features: torch.Tensor,
         task_features: torch.Tensor | None = None,
         gamma: float = 0.99,
+        mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Compute trajectory-level score from potential differences.
 
@@ -209,11 +220,14 @@ class StatePotentialRewardModel(nn.Module):
         Returns:
             trajectory_scores: [B]
         """
-        potentials = self.forward(frame_or_token_features, task_features)  # [B, T]
+        potentials = self.forward(frame_or_token_features, task_features, mask=mask)  # [B, T]
         if potentials.shape[1] < 2:
-            return potentials.mean(dim=1)
+            return potentials[:, 0]
         deltas = gamma * potentials[:, 1:] - potentials[:, :-1]  # [B, T-1]
-        return deltas.mean(dim=1)
+        if mask is None:
+            return deltas.mean(dim=1)
+        delta_mask = mask[:, 1:] & mask[:, :-1]
+        return (deltas * delta_mask).sum(dim=1) / delta_mask.sum(dim=1).clamp_min(1)
 
     def compute_deployment_reward(
         self,

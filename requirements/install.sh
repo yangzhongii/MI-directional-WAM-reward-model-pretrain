@@ -168,7 +168,7 @@ if [ "$TARGET" = "--mi-cosmos" ]; then
     uv pip install \
         transformers==5.2.0 \
         numpy scipy pillow opencv-python-headless \
-        pyyaml omegaconf einops tqdm rich \
+        pyyaml omegaconf einops tqdm rich pytest \
         lightning accelerate wandb tensorboard \
         huggingface_hub[cli] datasets safetensors \
         imageio matplotlib pandas
@@ -207,7 +207,7 @@ elif [ "$TARGET" = "--rlpd" ]; then
     uv pip install torch==2.7.0 torchvision==0.22.0
     uv pip install \
         transformers numpy scipy pillow opencv-python-headless \
-        pyyaml omegaconf einops tqdm rich \
+        pyyaml omegaconf einops tqdm rich pytest \
         safetensors matplotlib pandas \
         ray
 

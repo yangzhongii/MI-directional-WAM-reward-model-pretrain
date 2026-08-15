@@ -19,7 +19,9 @@ class LaWAMLAMFeatureExtractor(BaseFeatureExtractor):
     ``latent_action_model.core.lam_model.load_latent_action_model(ckpt, yaml)``.
     This standalone wrapper uses the same loader and then calls
     ``LatentLAMModel.extract_vision_features`` to obtain frozen visual features.
-    Token features are mean-pooled into one vector per frame for MI scoring.
+    The extractor exposes both the legacy pooled representation and the native
+    ``[T, K, D]`` patch representation.  GeoProgress uses the latter so that
+    object/goal relations are not discarded before relation-aware scoring.
     """
 
     def __init__(
@@ -29,13 +31,20 @@ class LaWAMLAMFeatureExtractor(BaseFeatureExtractor):
         vision_model_id: str | None = None,
         device: str = "cuda",
         fallback: BaseFeatureExtractor | None = None,
+        strict: bool = False,
     ):
         self.device = torch.device(device if device == "cuda" and torch.cuda.is_available() else "cpu")
         self.lam_config_path = lam_config_path
         self.lam_ckpt_path = lam_ckpt_path
         self.vision_model_id = vision_model_id
+        self.strict = strict
         self.fallback = fallback or DINOv3FeatureExtractor(device=str(self.device))
         self.lam = self._load_lam()
+        if self.strict and self.lam is None:
+            raise RuntimeError(
+                "LaWAM LAM could not be loaded in strict mode. Provide a valid "
+                "lam_config_path, lam_ckpt_path, and local vision_model_id."
+            )
 
     def _import_lam_module(self):
         try:
@@ -125,26 +134,52 @@ class LaWAMLAMFeatureExtractor(BaseFeatureExtractor):
         imagenet_normalize_(tensor)
         return tensor
 
+    def _as_tokens(self, features: torch.Tensor, expected_frames: int) -> torch.Tensor:
+        """Normalize LAM encoder output to ``[T, K, D]`` for a single batch."""
+        if features.ndim == 4:
+            if features.shape[0] != 1:
+                raise ValueError(f"Expected a single LAM batch, got {tuple(features.shape)}")
+            tokens = features[0]
+        elif features.ndim == 3:
+            # Some custom encoders flatten B and T.  With B=1 this is still
+            # unambiguous as long as the leading dimension is the frame count.
+            tokens = features
+        else:
+            raise ValueError(
+                "LAM vision encoder must return patch features shaped [B, T, K, D] "
+                f"or [T, K, D], got {tuple(features.shape)}."
+            )
+        if tokens.ndim != 3 or tokens.shape[0] != expected_frames:
+            raise ValueError(
+                f"Unexpected LAM token shape {tuple(tokens.shape)} for {expected_frames} frames."
+            )
+        return tokens.detach().cpu()
+
     @torch.no_grad()
-    def extract_frame(self, frame_path: str, task: str) -> torch.Tensor:
+    def extract_frame_tokens(self, frame_path: str, task: str) -> torch.Tensor:
         if self.lam is None:
-            return self.fallback.extract_frame(frame_path, task)
+            return self.fallback.extract_frame_tokens(frame_path, task)
         del task
         videos = self._load_frame_tensor(frame_path).unsqueeze(0).unsqueeze(0)
-        features = self.lam.extract_vision_features(videos)
-        return features.reshape(1, -1, features.shape[-1]).mean(dim=1).squeeze(0).detach().cpu()
+        return self._as_tokens(self.lam.extract_vision_features(videos), expected_frames=1).squeeze(0)
+
+    @torch.no_grad()
+    def extract_trajectory_tokens(self, frame_paths: list[str], task: str) -> torch.Tensor:
+        if not frame_paths:
+            raise ValueError("Cannot extract an empty trajectory.")
+        if self.lam is None:
+            return self.fallback.extract_trajectory_tokens(frame_paths, task)
+        del task
+        frames = torch.stack([self._load_frame_tensor(frame_path) for frame_path in frame_paths], dim=0)
+        return self._as_tokens(self.lam.extract_vision_features(frames.unsqueeze(0)), expected_frames=len(frame_paths))
+
+    @torch.no_grad()
+    def extract_frame(self, frame_path: str, task: str) -> torch.Tensor:
+        return self.extract_frame_tokens(frame_path, task).mean(dim=0)
 
     @torch.no_grad()
     def extract_trajectory(self, frame_paths: list[str], task: str) -> torch.Tensor:
-        if self.lam is None:
-            return self.fallback.extract_trajectory(frame_paths, task)
-        if not frame_paths:
-            raise ValueError("Cannot extract an empty trajectory.")
-        del task
-        frames = torch.stack([self._load_frame_tensor(frame_path) for frame_path in frame_paths], dim=0)
-        videos = frames.unsqueeze(0)
-        features = self.lam.extract_vision_features(videos)
-        return features.reshape(features.shape[1], -1, features.shape[-1]).mean(dim=1).detach().cpu()
+        return self.extract_trajectory_tokens(frame_paths, task).mean(dim=1)
 
 
 def _load_config(path: str | Path) -> dict[str, Any]:
@@ -173,10 +208,12 @@ def main() -> None:
         vision_model_id=cfg.get("vision_model_id"),
         device=cfg.get("device", "cuda"),
         fallback=DINOv3FeatureExtractor(
-            model_path=cfg.get("dino_model_path"),
+            model_path=cfg.get("dino_model_path") or cfg.get("vision_model_id"),
             device=cfg.get("device", "cuda"),
             image_size=int(cfg.get("image_size", 224)),
+            strict=False,
         ),
+        strict=bool(cfg.get("strict", False)),
     )
     feature = extractor.extract_frame(args.image, task="")
     print(

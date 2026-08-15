@@ -5,12 +5,13 @@ Cosmos upgrades or dependency changes don't affect the MI reward pipeline.
 
 Install:  bash requirements/install.sh --mi-cosmos
 Weights:  huggingface-cli download nvidia/Cosmos-Predict2.5-2B --local-dir weights/cosmos-predict2.5
-Inference: torchrun --nproc_per_node=8 examples/inference.py -i config.json ...
+Inference: torchrun --nproc_per_node=1 examples/inference.py -i config.json ...
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -25,6 +26,7 @@ class BaseFutureGenerator(ABC):
     def generate_candidates(
         self, init_image: np.ndarray, task_text: str,
         num_candidates: int = 10, num_frames: int = 16,
+        goal_image: np.ndarray | None = None,
     ) -> list[np.ndarray]:
         """Return list of [T, H, W, C] RGB uint8 arrays."""
         ...
@@ -32,6 +34,7 @@ class BaseFutureGenerator(ABC):
     @abstractmethod
     def generate_reference(
         self, init_image: np.ndarray, task_text: str, num_frames: int = 16,
+        goal_image: np.ndarray | None = None,
     ) -> np.ndarray:
         """Return [T, H, W, C] RGB uint8 array."""
         ...
@@ -41,6 +44,23 @@ class BaseFutureGenerator(ABC):
 # Cosmos-Predict2.5 via CLI
 # ---------------------------------------------------------------------------
 
+
+@dataclass(frozen=True)
+class ActionConditionedRequest:
+    """Sidecar contract for official robot/action-conditioned Cosmos runs.
+
+    The generator's RGB frames are only a candidate video.  The paired action
+    and robot-state logs are mandatory and are consumed by
+    ``cosmos_action_cond.ingest_action_conditioned_candidates``.
+    """
+
+    parent_traj_id: str
+    action_path: str
+    robot_state_path: str
+    relation_path: str
+    goal_ref_id: str
+    generation_seed: int
+
 class CosmosPredictGenerator(BaseFutureGenerator):
     """Cosmos-Predict2.5 via CLI subprocess — no Python API dependency.
 
@@ -49,14 +69,16 @@ class CosmosPredictGenerator(BaseFutureGenerator):
         torchrun --nproc_per_node=<gpus> examples/inference.py \\
           -i config.json --model <model> --checkpoint-path <weights> -o output/
 
-    Works on 8×A800 with the pre-trained 2B model, or on 4090 with distilled.
+    Defaults to one process for small 2B validation. Multi-process launch is
+    optional acceleration and is not used by the robot/action-conditioned
+    ingestion path.
     """
 
     def __init__(
         self,
         cosmos_repo: str | None = None,
         weights_dir: str = "weights/cosmos-predict2.5",
-        gpus: int = 8,
+        gpus: int = 1,
         model_name: str = "2B/post-trained",
         temperature: float = 1.0,
         ref_temperature: float = 0.3,
@@ -72,7 +94,7 @@ class CosmosPredictGenerator(BaseFutureGenerator):
         self.num_steps = num_steps
 
     def _generate_one(
-        self, init_image: np.ndarray, task_text: str, num_frames: int, temperature: float,
+        self, init_image: np.ndarray, task_text: str, num_frames: int, temperature: float, seed: int,
     ) -> np.ndarray:
         import tempfile, subprocess, sys, os
 
@@ -86,7 +108,7 @@ class CosmosPredictGenerator(BaseFutureGenerator):
         config_path.write_text(json.dumps({
             "name": "cosmos_gen",
             "prompt": task_text,
-            "seed": 0,
+            "seed": seed,
             "input_image_path": str(img_path),
             "num_output_frames": num_frames,
         }))
@@ -115,27 +137,35 @@ class CosmosPredictGenerator(BaseFutureGenerator):
     def generate_candidates(
         self, init_image: np.ndarray, task_text: str,
         num_candidates: int = 10, num_frames: int = 16,
+        goal_image: np.ndarray | None = None,
     ) -> list[np.ndarray]:
+        # The generic CLI path is visual-only. Robot/action-conditioned output
+        # is ingested through cosmos_action_cond.py with its sidecar logs.
+        del goal_image
         videos = []
         for i in range(num_candidates):
-            video = self._generate_one(init_image, task_text, num_frames, self.temperature)
+            video = self._generate_one(init_image, task_text, num_frames, self.temperature, seed=i)
             videos.append(video)
         return videos
 
     def generate_reference(
         self, init_image: np.ndarray, task_text: str, num_frames: int = 16,
+        goal_image: np.ndarray | None = None,
     ) -> np.ndarray:
-        return self._generate_one(init_image, task_text, num_frames, self.ref_temperature)
+        del goal_image
+        return self._generate_one(init_image, task_text, num_frames, self.ref_temperature, seed=0)
 
 
 # ---------------------------------------------------------------------------
-# Diffusers CPU-offload backend (4090 48GB)
+# Diffusers CPU-offload backend (single 24GB RTX 4090 validation)
 # ---------------------------------------------------------------------------
 
 class DiffusersCosmosGenerator(BaseFutureGenerator):
     """Cosmos-Predict2.5 via Diffusers pipeline with CPU offload for 4090.
 
-    Fits on a single 4090 48 GB using device_map="auto" + attention slicing.
+    Uses CPU offload and attention slicing for small single-GPU validation.
+    A standard RTX 4090 has 24 GB; exact memory use depends on resolution,
+    frames, and the installed Cosmos build.
     Uses the distilled 2B model (3.9 GB) with DMD2 solver (4 inference steps).
 
     Requires::
@@ -304,7 +334,9 @@ class MockFutureGenerator(BaseFutureGenerator):
     def generate_candidates(
         self, init_image: np.ndarray, task_text: str,
         num_candidates: int = 10, num_frames: int = 16,
+        goal_image: np.ndarray | None = None,
     ) -> list[np.ndarray]:
+        del task_text, goal_image
         H, W, C = init_image.shape
         target = np.clip(init_image.astype(np.float32) * 1.5 + 30, 0, 255).astype(np.uint8)
         videos = []
@@ -324,7 +356,9 @@ class MockFutureGenerator(BaseFutureGenerator):
 
     def generate_reference(
         self, init_image: np.ndarray, task_text: str, num_frames: int = 16,
+        goal_image: np.ndarray | None = None,
     ) -> np.ndarray:
+        del task_text, goal_image
         H, W, C = init_image.shape
         target = np.clip(init_image.astype(np.float32) * 1.5 + 30, 0, 255).astype(np.uint8)
         frames = []

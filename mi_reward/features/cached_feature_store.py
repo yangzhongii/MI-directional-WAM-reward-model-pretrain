@@ -67,6 +67,7 @@ def make_extractor(
     lam_config_path: str | None = None,
     lam_ckpt_path: str | None = None,
     vision_model_id: str | None = None,
+    strict: bool = False,
 ) -> BaseFeatureExtractor:
     if name.lower() in {"lawam_lam", "lam"}:
         return LaWAMLAMFeatureExtractor(
@@ -74,9 +75,18 @@ def make_extractor(
             lam_ckpt_path=lam_ckpt_path,
             vision_model_id=vision_model_id,
             device=device,
-            fallback=DINOv3FeatureExtractor(model_path=model_path, device=device, image_size=image_size),
+            # LAM owns the production encoder in this branch. The fallback is
+            # only for legacy/non-strict extraction, so it must not reject a
+            # valid LAM setup before LAM has a chance to load.
+            fallback=DINOv3FeatureExtractor(
+                model_path=model_path or vision_model_id,
+                device=device,
+                image_size=image_size,
+                strict=False,
+            ),
+            strict=strict,
         )
-    return DINOv3FeatureExtractor(model_path=model_path, device=device, image_size=image_size)
+    return DINOv3FeatureExtractor(model_path=model_path, device=device, image_size=image_size, strict=strict)
 
 
 def main() -> None:
@@ -92,6 +102,8 @@ def main() -> None:
     parser.add_argument("--model_path", default=None)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--image_size", type=int, default=224)
+    parser.add_argument("--strict", action="store_true", help="Fail instead of using the smoke-test feature fallback.")
+    parser.add_argument("--tokens", action="store_true", help="Also cache native visual patch tokens as <traj_id>_tokens.")
     args = parser.parse_args()
 
     extractor_name = args.feature_extractor or args.extractor or "dino_v3"
@@ -103,13 +115,18 @@ def main() -> None:
         lam_config_path=args.lam_config_path,
         lam_ckpt_path=args.lam_ckpt_path,
         vision_model_id=args.vision_model_id,
+        strict=args.strict,
     )
     store = CachedFeatureStore(args.feature_root)
     for example in read_jsonl(args.manifest, TrajectoryExample):
         store.get_or_extract(example.traj_id, example.frames, example.task, extractor)
+        if args.tokens:
+            store.get_or_extract_tokens(example.traj_id, example.frames, example.task, extractor)
     if args.success_refs:
         for ref in read_jsonl(args.success_refs, SuccessReference):
             store.get_or_extract(ref.ref_id, ref.frames, ref.task, extractor)
+            if args.tokens:
+                store.get_or_extract_tokens(ref.ref_id, ref.frames, ref.task, extractor)
 
 
 if __name__ == "__main__":
