@@ -45,12 +45,15 @@ def train_reward_sft(
     model = TrajectoryRewardHead(input_dim=first.shape[-1], hidden_dim=hidden_dim).to(device_obj)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
+    from tqdm import tqdm
+
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     log_path = out / "train_log.jsonl"
     with log_path.open("w", encoding="utf-8") as log_f:
         global_step = 0
-        for epoch in range(epochs):
+        pbar = tqdm(range(epochs), desc="SFT training", unit="epoch")
+        for epoch in pbar:
             total_loss = 0.0
             total_count = 0
             for batch in loader:
@@ -68,7 +71,9 @@ def train_reward_sft(
                 total_count += chosen.shape[0]
                 log_f.write(json.dumps({"step": global_step, "epoch": epoch, "loss": float(loss.item())}) + "\n")
                 global_step += 1
-            log_f.write(json.dumps({"epoch": epoch, "mean_loss": total_loss / max(total_count, 1)}) + "\n")
+            mean_loss = total_loss / max(total_count, 1)
+            log_f.write(json.dumps({"epoch": epoch, "mean_loss": mean_loss}) + "\n")
+            pbar.set_postfix({"loss": f"{mean_loss:.4f}"})
 
     config = {
         "preferences": str(preferences),
@@ -141,13 +146,16 @@ def train_reward_distill(
     mi_field = MIPotentialField(backend=MIBackend.DAME_BSPLINE, gamma=gamma)
     mi_field._mi.to(device_obj)
 
+    from tqdm import tqdm
+
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     log_path = out / "train_log.jsonl"
 
     with log_path.open("w", encoding="utf-8") as log_f:
         global_step = 0
-        for epoch in range(epochs):
+        pbar = tqdm(range(epochs), desc="Distill training", unit="epoch")
+        for epoch in pbar:
             total_loss = 0.0
             total_count = 0
             for batch in loader:
@@ -207,10 +215,12 @@ def train_reward_distill(
                     "direction": float(result["direction"].item()) if torch.is_tensor(result["direction"]) else float(result["direction"]),
                 }) + "\n")
                 global_step += 1
+            mean_loss = total_loss / max(total_count, 1)
             log_f.write(json.dumps({
                 "epoch": epoch,
-                "mean_loss": total_loss / max(total_count, 1),
+                "mean_loss": mean_loss,
             }) + "\n")
+            pbar.set_postfix({"loss": f"{mean_loss:.4f}"})
 
     config = {
         "preferences": str(preferences), "feature_root": str(feature_root),

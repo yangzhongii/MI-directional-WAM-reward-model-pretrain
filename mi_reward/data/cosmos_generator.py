@@ -129,6 +129,132 @@ class CosmosPredictGenerator(BaseFutureGenerator):
 
 
 # ---------------------------------------------------------------------------
+# Diffusers CPU-offload backend (4090 48GB)
+# ---------------------------------------------------------------------------
+
+class DiffusersCosmosGenerator(BaseFutureGenerator):
+    """Cosmos-Predict2.5 via Diffusers pipeline with CPU offload for 4090.
+
+    Fits on a single 4090 48 GB using device_map="auto" + attention slicing.
+    Uses the distilled 2B model (3.9 GB) with DMD2 solver (4 inference steps).
+
+    Requires::
+
+        pip install diffusers>=0.39.0 accelerate
+
+    Usage::
+
+        gen = DiffusersCosmosGenerator(
+            model_id="nvidia/Cosmos-Predict2.5-2B",
+            variant="distilled",
+        )
+        video = gen.generate_reference(init_image, "open the drawer")
+    """
+
+    def __init__(
+        self,
+        model_id: str = "nvidia/Cosmos-Predict2.5-2B",
+        variant: str = "distilled",
+        device: str = "cuda",
+        num_steps: int = 4,
+        enable_cpu_offload: bool = True,
+        enable_vae_slicing: bool = True,
+        enable_attention_slicing: bool = True,
+        temperature: float = 1.0,
+        ref_temperature: float = 0.3,
+    ):
+        self.model_id = model_id
+        self.variant = variant
+        self.device = device
+        self.num_steps = num_steps
+        self.enable_cpu_offload = enable_cpu_offload
+        self.enable_vae_slicing = enable_vae_slicing
+        self.enable_attention_slicing = enable_attention_slicing
+        self.temperature = temperature
+        self.ref_temperature = ref_temperature
+        self._pipe = None
+
+    def _get_pipe(self):
+        if self._pipe is None:
+            import torch
+            from diffusers import Cosmos2_5_PredictBasePipeline
+
+            # Mock safety checker (cosmos_guardrail not available)
+            import diffusers.pipelines.cosmos.pipeline_cosmos2_5_predict as _cp
+            class _DummySC:
+                def __getattr__(self, _):
+                    return lambda *a, **k: True
+                def to(self, *a, **k): return self
+                def eval(self): return self
+                def check_text_safety(self, p): return True
+                def check_video_safety(self, video, *a, **k): return video
+            _cp.CosmosSafetyChecker = _DummySC
+
+            # Load local diffusers-format weights
+            local = str(self.model_id)
+            if not Path(local).exists() and self.variant:
+                local = str(Path("weights/cosmos-diffusers-2b").resolve())
+            self._pipe = Cosmos2_5_PredictBasePipeline.from_pretrained(
+                local, torch_dtype=torch.bfloat16,
+                low_cpu_mem_usage=True, local_files_only=True,
+            )
+            if self.enable_cpu_offload:
+                self._pipe.enable_model_cpu_offload()
+            if self.enable_attention_slicing:
+                self._pipe.enable_attention_slicing()
+        return self._pipe
+
+    def generate_candidates(
+        self, init_image: np.ndarray, task_text: str,
+        num_candidates: int = 10, num_frames: int = 16,
+        goal_image: np.ndarray | None = None,
+    ) -> list[np.ndarray]:
+        videos = []
+        for i in range(num_candidates):
+            videos.append(self._run(init_image, task_text, num_frames, self.temperature, seed=i, goal_image=goal_image))
+        return videos
+
+    def generate_reference(
+        self, init_image: np.ndarray, task_text: str, num_frames: int = 16,
+        goal_image: np.ndarray | None = None,
+    ) -> np.ndarray:
+        return self._run(init_image, task_text, num_frames, self.ref_temperature, seed=0, goal_image=goal_image)
+
+    def _run(
+        self, init_image: np.ndarray, task_text: str,
+        num_frames: int, temperature: float, seed: int = 0,
+        goal_image: np.ndarray | None = None,
+    ) -> np.ndarray:
+        import torch
+        pipe = self._get_pipe()
+        h, w = init_image.shape[:2]
+        h = (h // 16) * 16
+        w = (w // 16) * 16
+        kwargs = dict(
+            prompt=task_text,
+            image=Image.fromarray(init_image).convert("RGB"),
+            num_frames=num_frames if num_frames > 1 else 1,
+            height=h, width=w,
+            num_inference_steps=self.num_steps,
+            generator=torch.Generator().manual_seed(seed),
+        )
+        if goal_image is not None:
+            kwargs["video"] = Image.fromarray(goal_image).convert("RGB")  # Video2World: last-frame conditioning
+        with torch.inference_mode():
+            output = pipe(**kwargs)
+        # CosmosPipelineOutput.frames is list[Tensor[H,W,C]] or list[Tensor[T,H,W,C]]
+        frames = output.frames[0]
+        if isinstance(frames, list):
+            return np.stack([np.array(f) for f in frames])
+        if isinstance(frames, torch.Tensor):
+            f = frames.cpu().numpy()
+            if f.ndim == 4:   # [T, H, W, C]
+                f = f[0] if f.shape[0] == 1 else f
+            return f
+        return np.array(frames)
+
+
+# ---------------------------------------------------------------------------
 # internal helpers
 # ---------------------------------------------------------------------------
 
