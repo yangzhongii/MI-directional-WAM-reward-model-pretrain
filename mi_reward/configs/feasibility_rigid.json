@@ -1,0 +1,9 @@
+{
+  "required_relation_names": [
+    "object_to_goal_distance",
+    "ee_to_object_distance"
+  ],
+  "max_ee_to_object_distance": 1.5,
+  "max_object_to_goal_distance": 2.0,
+  "max_object_goal_orientation_error": 3.15
+}

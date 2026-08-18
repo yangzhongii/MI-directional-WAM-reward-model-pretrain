@@ -209,6 +209,7 @@ This is more precisely **preference-based reward-model fine-tuning**; we use
 | Baselines | Implemented | Pixel MSE, latent cosine, pooled correlation, unaligned Dame MI |
 | Pairwise ranking evaluation | Implemented | Accuracy, reward margin, score correlation |
 | Progress correlation evaluation | Implemented | Temporal progress correlation and success/failure AUC |
+| RBM-EVAL benchmark adapter | Implemented | Official reward alignment, policy ranking, and quality preference samplers/metrics |
 | Shell script wrappers | Implemented | Scripts under `mi_reward/scripts/` |
 | Smoke test | Implemented | Synthetic end-to-end pipeline test |
 | Unit tests | Implemented | Soft histogram, temporal alignment, reward loss tests |
@@ -217,8 +218,8 @@ This is more precisely **preference-based reward-model fine-tuning**; we use
 | Directional reward distillation | Implemented | `train_reward_distill()` trains StatePotentialRewardModel with rank + potential + direction loss |
 | Ablation reward functions | Implemented | latent_distance, cosine_similarity, static MI, directional MI (interchangeable via `MIBackend`) |
 | Task-conditioned feature preprocessing | Planned | Current extractors pass task as unused parameter |
-| Downstream RL/RLPD integration | Planned | Reward-head handoff into policy training not yet implemented |
-| Real-robot reward validation | Planned | No real-robot evaluation pipeline |
+| Downstream RL/RLPD integration | Drop-in adapter implemented | RLinf registry/worker wiring must be applied in the RLinf checkout |
+| Real-robot reward validation | Integration scaffold implemented | Requires the local Franka/RLinf deployment and a trained checkpoint |
 
 ## Repository Structure
 
@@ -239,13 +240,69 @@ mi_reward/                 MI-directional reward pretraining extension
 ├── training/              Pairwise ranking loss, collator, SFT training loop
 ├── evaluation/            Ranking accuracy and progress correlation evaluation
 └── scripts/               Shell wrappers for the full pipeline
+eval/                      Independent RBM-EVAL launcher and YAML configuration
 tests/                     Smoke tests (full pipeline + MI backends + ablation)
-requirements/              Automated env setup (--mi-cosmos for A800, --rlpd for 4090+NUC)
+requirements/              Automated env setup (--instance-data, --reward-eval, --mi-cosmos, --rlpd)
 train_lawam.sh             Single-node LaWAM training entrypoint
 train_lawam_distributed.sh Multi-node LaWAM training entrypoint
 ```
 
 ## Installation
+
+### Instance Data Environment
+
+Install the single `.venv` used by Stage 1. All third-party source trees are
+placed in `.venv/src`, Python packages are installed into `.venv`, and model
+weights go in `.venv/models`.
+
+```bash
+bash requirements/install.sh --instance-data
+# Add --download-weights after Hugging Face login to fetch SAM3, Cosmos
+# Predict/Transfer, DINOv3, and LAM checkpoints into .venv/models.
+source .venv/bin/activate
+```
+
+The MuJoCo backend is the fixed simulator for the rigid MVP. The data script
+sets `MUJOCO_GL=egl` for headless rendering.
+
+Before the non-dry-run data command, fill `execution.stages` in
+`mi_reward/configs/instance_geoprogress.yaml` with the release-specific SAM3,
+Cosmos Transfer/Predict, simulator, and planner commands. Every command uses
+the installed `.venv/bin/python` through the `{python}` token and must produce
+the JSONL hand-off required by the orchestrator. An empty stage list is only
+the pre-generated-candidate ingest mode; it does not launch model inference.
+
+### RBM-EVAL Environment
+
+Install the complete Robometer/RBM-EVAL source tree into the shared `.venv`
+without allowing its incompatible Torch 2.8 dependency pins to replace the
+Cosmos/SAM3 stack. The source is checked out at a fixed commit under
+`.venv/src/robometer`; optional processed benchmark data is stored under
+`.venv/datasets/robometer`. The download option also runs Robometer's official
+archive extraction script so the sampler can load the cache directly.
+
+```bash
+bash requirements/install.sh --reward-eval
+# After Hugging Face login, download the processed RBM-1M cache:
+bash requirements/install.sh --reward-eval --download-eval-data
+```
+
+Run the independent evaluation stage with one launcher and one YAML file:
+
+```bash
+bash eval/run_rbm_eval.sh --config eval/configs/rbm_eval.yaml
+```
+
+The adapter uses Robometer's official `reward_alignment`, `policy_ranking`, and
+`quality_preference` samplers and metric compilers. It supports the local
+`StatePotentialRewardModel` and legacy `TrajectoryRewardHead` checkpoints. A
+`GeoProgressPotential` checkpoint is accepted only when
+`geoprogress.relation_sidecar` supplies measured relations and an explicit
+successful goal (`goal_frames` or `goal_tokens_path`) for every benchmark
+trajectory. RBM-EVAL videos do not contain those geometry inputs, so missing
+sidecars fail loudly instead of producing scores from fabricated zero relations.
+Results are written to `results/rbm_eval/mi_reward/metrics.json` plus per-dataset
+raw result files.
 
 ### LaWAM Backbone
 
@@ -412,12 +469,11 @@ python -m mi_reward.training.train_reward_sft \
 LaWAM paths; set `CANDIDATE_RECORDS` and `FEASIBILITY_CONFIG` when the manifest
 still needs to be ingested.
 
-### GeoProgress environment, start, and test
+### Legacy GeoProgress environment
 
-For candidate ingestion, LaWAM feature extraction, reward training, and the
-CPU smoke test, create the reward environment once. This path does not execute
-Cosmos locally; it consumes action-conditioned candidate sidecars generated by
-the collaborating Cosmos worker.
+The original offline GeoProgress path can still use a separate `.venv-rlpd`
+environment and pre-generated action-conditioned candidate sidecars. It is
+kept for compatibility with the older Cosmos workflow.
 
 ```bash
 cd /path/to/LaWAM
@@ -534,6 +590,40 @@ python -m mi_reward.evaluation.eval_progress_corr \
   --success_refs dataset/mi_reward/manifests/success_refs.jsonl \
   --output results/mi_reward/libero_progress_report.json
 ```
+
+### Instance-Aware Rigid V1
+
+The instance-aware path keeps scene variation, object replacement, physical
+state, and generated RGB separate. It accepts the `pick_place`, `push_shape`,
+and `peg_insertion` task families in one `rigid_v1` manifest. Configure any
+available external stages in `mi_reward/configs/instance_geoprogress.yaml`;
+each worker receives `{request}` and `{result}` paths and must return a JSON
+result containing its `records_path`.
+
+The data-preparation flow uses one command:
+
+```bash
+# Validate all YAML paths and worker hand-offs without launching models.
+bash mi_reward/scripts/prepare_instance_data.sh \
+  --config mi_reward/configs/instance_geoprogress.yaml \
+  --task-suite rigid_v1 \
+  --dry-run
+
+# Run SAM3, Cosmos Transfer/Predict, MuJoCo rollouts, and verification.
+bash mi_reward/scripts/prepare_instance_data.sh \
+  --config mi_reward/configs/instance_geoprogress.yaml \
+  --task-suite rigid_v1
+```
+
+After the manifest is written, start the LaWAM/MI reward stage separately:
+
+```bash
+bash mi_reward/scripts/run_instance_geoprogress.sh \
+  --config mi_reward/configs/instance_geoprogress.yaml
+```
+
+`generate_instance_rollouts.sh` remains as a compatibility alias for
+`prepare_instance_data.sh`.
 
 ### Smoke test
 
@@ -958,21 +1048,23 @@ The MI reward extension evaluates the learned reward model along several axes:
 | Success vs. failure separation | `eval_progress_corr` | Mean score gap and AUC between successful and failed trajectories |
 | Temporal progress correlation | `eval_progress_corr` | Correlation between learned/MI scores and ground-truth temporal progress |
 
-### Planned Evaluations
+### Remaining Evaluation Work
 
 The following evaluation categories are planned but not yet implemented:
 
 - Success-versus-near-miss ranking
 - Reward calibration against ground-truth task success
-- Downstream policy-learning evaluation (RLPD with learned reward)
+- End-to-end downstream policy-learning evaluation (RLPD with learned reward)
 - Comparison against pixel-space baselines (LPIPS, DINO/CLIP cosine similarity)
 - Comparison against LaWAM latent cosine similarity (without reward-model SFT)
 - Comparison against available robot reward models
 
 ### RLinf Franka RLPD Integration
 
-Documentation for deploying the trained MI state-potential reward model in RLinf's
-asynchronous Franka RLPD pipeline is available at:
+The inference model, potential-difference cache, confidence gating, and optional
+MI-guided replay sampler are implemented as drop-in RLinf modules. The RLinf
+repository itself is not vendored here, so the final registry and worker import
+paths must be applied in the local RLinf checkout. Documentation is available at:
 
 - **Franka 真机部署文档:** [docs/rlinf_integration/franka_mi_potential_rlpd.rst](docs/rlinf_integration/franka_mi_potential_rlpd.rst)
 - **集成实现报告:** [docs/rlinf_integration/mi_potential_rlpd_implementation_report.md](docs/rlinf_integration/mi_potential_rlpd_implementation_report.md)
@@ -1027,8 +1119,8 @@ Checked items are implemented and functional.
 - [x] Cosmos-Predict trajectory adapter
 - [x] MI Directional Potential Field (unified module, multi-backend)
 - [x] Directional reward distillation (rank + potential + direction losses)
-- [ ] Downstream RL/RLPD integration with learned reward
-- [ ] Real-robot reward validation
+- [x] Drop-in downstream RL/RLPD reward adapter and potential shaping state
+- [ ] RLinf checkout registry wiring and end-to-end real-robot validation
 - [ ] Transformer-based reward head with temporal attention
 - [ ] Multi-reference MI aggregation strategies
 

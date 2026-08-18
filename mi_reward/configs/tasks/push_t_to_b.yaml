@@ -1,0 +1,12 @@
+task_family: push_shape
+instruction: push the B-shaped object onto the target outline
+source_object: push_t
+target_object: push_b
+scene_variants: [table_light_1, table_dark_2]
+object_variants: [t_train, b_heldout]
+camera: global_cam
+num_candidates: 8
+planner: lawam_or_motion_plan
+simulator: mujoco
+predict_model: 2B/robot/action-cond
+transfer_enabled: true

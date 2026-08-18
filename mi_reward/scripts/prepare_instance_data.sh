@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Stage 1: prepare SAM3/Cosmos/MuJoCo instance-aware rollout data.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
+cd "$REPO_ROOT"
+
+if [ -f ".venv/bin/activate" ]; then
+    source .venv/bin/activate
+elif [ -f ".venv-mi/bin/activate" ]; then
+    source .venv-mi/bin/activate
+else
+    echo "Missing data-preparation environment. Run: bash requirements/install.sh --instance-data" >&2
+    exit 1
+fi
+
+export MUJOCO_GL="${MUJOCO_GL:-egl}"
+export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
+
+CONFIG="mi_reward/configs/instance_geoprogress.yaml"
+ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --config) CONFIG="$2"; shift 2 ;;
+        --task-suite) ARGS+=("--task-suite" "$2"); shift 2 ;;
+        --dry-run) ARGS+=("--dry-run"); shift ;;
+        *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+
+python -m mi_reward.data.instance_pipeline --config "$CONFIG" "${ARGS[@]}"

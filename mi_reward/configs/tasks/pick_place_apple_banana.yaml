@@ -1,0 +1,13 @@
+task_family: pick_place
+instruction: pick up the banana and place it in the basket
+source_object: apple
+target_object: banana
+goal_container: basket
+scene_variants: [table_light_1, table_dark_2]
+object_variants: [apple_train, banana_heldout]
+camera: global_cam
+num_candidates: 8
+planner: lawam_or_motion_plan
+simulator: mujoco
+predict_model: 2B/robot/action-cond
+transfer_enabled: true

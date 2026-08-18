@@ -77,14 +77,18 @@ class CosmosPredictGenerator(BaseFutureGenerator):
     def __init__(
         self,
         cosmos_repo: str | None = None,
-        weights_dir: str = "weights/cosmos-predict2.5",
+        weights_dir: str = ".venv/models/cosmos-predict2.5",
         gpus: int = 1,
         model_name: str = "2B/post-trained",
         temperature: float = 1.0,
         ref_temperature: float = 0.3,
         num_steps: int = 35,
     ):
-        repo = Path(cosmos_repo) if cosmos_repo else Path(__file__).resolve().parents[3] / ".venv" / "cosmos-predict2.5"
+        repo = (
+            Path(cosmos_repo)
+            if cosmos_repo
+            else Path(__file__).resolve().parents[3] / ".venv" / "src" / "cosmos-predict2.5"
+        )
         self.cosmos_repo = Path(repo)
         self.weights_dir = Path(weights_dir).resolve()
         self.gpus = gpus

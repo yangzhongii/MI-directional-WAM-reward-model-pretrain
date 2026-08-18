@@ -12,6 +12,15 @@ from mi_reward.features.dino_v3_extractor import DINOv3FeatureExtractor
 from mi_reward.features.lawam_lam_extractor import LaWAMLAMFeatureExtractor
 
 
+def _should_extract(example: TrajectoryExample) -> bool:
+    """Exclude rejected generated candidates from expensive feature jobs."""
+
+    requires_verification = (
+        example.source in {"cosmos_action_cond", "instance_rollout"} or example.candidate_provenance is not None
+    )
+    return not requires_verification or bool(example.verification and example.verification.accepted)
+
+
 def safe_feature_name(item_id: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "__", item_id).strip("_") or "unnamed"
 
@@ -119,6 +128,8 @@ def main() -> None:
     )
     store = CachedFeatureStore(args.feature_root)
     for example in read_jsonl(args.manifest, TrajectoryExample):
+        if not _should_extract(example):
+            continue
         store.get_or_extract(example.traj_id, example.frames, example.task, extractor)
         if args.tokens:
             store.get_or_extract_tokens(example.traj_id, example.frames, example.task, extractor)

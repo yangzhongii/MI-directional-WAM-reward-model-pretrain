@@ -331,7 +331,11 @@ from PIL import Image     # noqa: E402
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build MI reward manifests from frames or LaWAM eval outputs.")
-    parser.add_argument("--source_type", choices=["frames", "libero", "robotwin", "cosmos", "cosmos_action_cond"], default="frames")
+    parser.add_argument(
+        "--source_type",
+        choices=["frames", "libero", "robotwin", "cosmos", "cosmos_action_cond", "instance_rollout"],
+        default="frames",
+    )
     parser.add_argument("--run_dir", default=None)
     parser.add_argument("--frame_root", default=None)
     parser.add_argument("--output", default=None, help="Output manifest path (required for frames/libero/robotwin)")
@@ -349,6 +353,11 @@ def main() -> None:
     parser.add_argument("--real-cosmos", action="store_true", help="Use real Cosmos-Predict2.5 (not Mock)")
     parser.add_argument("--candidate_records", default=None, help="JSONL external robot/action-conditioned Cosmos outputs.")
     parser.add_argument("--feasibility_config", default=None, help="JSON feasibility constraints for --source_type cosmos_action_cond.")
+    parser.add_argument("--task_family", default=None, help="Required task family for --source_type instance_rollout.")
+    parser.add_argument("--max_pose_step", type=float, default=0.25)
+    instance_strict = parser.add_mutually_exclusive_group()
+    instance_strict.add_argument("--strict-instance", action="store_true", default=True)
+    instance_strict.add_argument("--allow_missing_controls", action="store_false", dest="strict_instance")
     args = parser.parse_args()
     if args.source_type == "frames":
         if args.frame_root is None or args.output is None:
@@ -413,6 +422,28 @@ def main() -> None:
             args.candidate_records,
             args.output,
             feasibility_config_from_dict(config_payload),
+            split=args.split,
+        )
+    elif args.source_type == "instance_rollout":
+        if args.candidate_records is None or args.output is None or args.feasibility_config is None or args.task_family is None:
+            parser.error(
+                "--candidate_records, --output, --feasibility_config, and --task_family "
+                "are required for --source_type instance_rollout"
+            )
+        from mi_reward.data.cosmos_action_cond import feasibility_config_from_dict
+        from mi_reward.data.instance_rollout import ingest_instance_rollout_candidates
+        from mi_reward.verification.instance_checks import InstanceVerificationConfig
+
+        config_payload = _read_json(Path(args.feasibility_config))
+        examples = ingest_instance_rollout_candidates(
+            args.candidate_records,
+            args.output,
+            feasibility_config_from_dict(config_payload),
+            InstanceVerificationConfig(
+                task_family=args.task_family,
+                max_pose_step=args.max_pose_step,
+                require_controls=args.strict_instance,
+            ),
             split=args.split,
         )
     print(f"Wrote {len(examples)} trajectories to {args.output}")

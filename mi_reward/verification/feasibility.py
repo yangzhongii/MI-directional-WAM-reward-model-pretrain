@@ -56,6 +56,8 @@ def verify_candidate(
         and provenance.action_path
         and provenance.robot_state_path
         and provenance.parent_traj_id
+        and Path(provenance.action_path).is_file()
+        and Path(provenance.robot_state_path).is_file()
     )
     checks["action_and_state_context"] = has_context
     if not has_context:

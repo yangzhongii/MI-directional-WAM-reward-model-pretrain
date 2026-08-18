@@ -2,11 +2,14 @@
 # LaWAM + MI Reward Extension — automated environment setup with uv.
 #
 # Usage:
+#   bash requirements/install.sh --instance-data  # .venv: SAM3/Cosmos/MuJoCo data preparation
+#   bash requirements/install.sh --reward-eval    # .venv: Robometer/RBM-EVAL adapter
 #   bash requirements/install.sh --mi-cosmos      # Training env: cosmos + DINO + MI reward (8×A800)
 #   bash requirements/install.sh --rlpd           # Inference env: DINOv3 + RewardHead + Ray (NUC + 4090)
 #   bash requirements/install.sh --help
 #
-# The two environments are independent (different venvs, different deps).
+# The instance-data environment is the shared `.venv` for Stage 1 and Stage 2.
+# `.venv-mi` and `.venv-rlpd` remain legacy isolated environments.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,6 +26,17 @@ USE_MIRRORS=0
 INSTALL_FLASH_ATTN=1
 INSTALL_PROJECT=1
 COSMOS_GIT_REF="${COSMOS_GIT_REF:-a2c298b0a3df3778b973fe65e9e58877b292d8a7}"
+SAM3_REPO_URL="${SAM3_REPO_URL:-https://github.com/facebookresearch/sam3.git}"
+SAM3_GIT_REF="${SAM3_GIT_REF:-}"
+SAM3_MODEL_ID="${SAM3_MODEL_ID:-facebook/sam3}"
+COSMOS_PREDICT_MODEL_ID="${COSMOS_PREDICT_MODEL_ID:-nvidia/Cosmos-Predict2.5-2B}"
+COSMOS_TRANSFER_MODEL_ID="${COSMOS_TRANSFER_MODEL_ID:-nvidia/Cosmos-Transfer2.5-2B}"
+DINO_MODEL_ID="${DINO_MODEL_ID:-facebook/dinov3-vitb16-pretrain-lvd1689m}"
+LAM_MODEL_ID="${LAM_MODEL_ID:-jialei02/lawam_lam}"
+ROBOMETER_REPO_URL="${ROBOMETER_REPO_URL:-https://github.com/robometer/robometer.git}"
+ROBOMETER_GIT_REF="${ROBOMETER_GIT_REF:-352d160389daa964788de1ec933d1925f3a6de4f}"
+DOWNLOAD_WEIGHTS=0
+DOWNLOAD_EVAL_DATA=0
 GITHUB_PREFIX=""
 
 # ------------------------------------------------------------------
@@ -57,6 +71,10 @@ print_help() {
 Usage: bash requirements/install.sh <target> [options]
 
 Targets (mutually exclusive):
+    --instance-data        Data-preparation environment with SAM3, Cosmos, and MuJoCo.
+                           Creates .venv and stores source/checkpoints under .venv/.
+    --reward-eval          RBM-EVAL environment in the shared .venv.
+                           Clones the pinned Robometer source under .venv/src/.
     --mi-cosmos            Training environment: cosmos + DINOv3 + MI reward pipeline.
                            Creates .venv-mi (Python 3.10, CUDA 12.8, for 8xA800).
     --rlpd                 Inference environment: DINOv3 + RewardHead + Ray.
@@ -67,12 +85,22 @@ Options:
     --no-flash-attn        Skip flash-attn (--mi-cosmos only).
     --no-install-project   Skip editable install of the project itself.
     --cosmos-ref <ref>     Cosmos-Predict2.5 git ref (--mi-cosmos only, default: pinned).
+    --sam3-repo <url>      SAM3 git URL (--instance-data only).
+    --download-weights     Download SAM3, Cosmos Predict/Transfer, DINOv3, and LAM weights.
+                           Requires Hugging Face access and uses *_MODEL_ID overrides.
+    --download-eval-data   Download Robometer processed evaluation datasets into .venv/datasets/robometer.
+                           Requires Hugging Face access; can also be run later with the same target.
     -h, --help             Show this help.
 EOF
 }
 
 TARGET="${1:-}"
 shift || true
+
+if [[ "$TARGET" = "-h" || "$TARGET" = "--help" ]]; then
+    print_help
+    exit 0
+fi
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -81,11 +109,22 @@ while [[ $# -gt 0 ]]; do
         --no-flash-attn)    INSTALL_FLASH_ATTN=0; shift ;;
         --no-install-project) INSTALL_PROJECT=0; shift ;;
         --cosmos-ref)       COSMOS_GIT_REF="${2:-}"; shift 2 ;;
+        --sam3-repo)        SAM3_REPO_URL="${2:-}"; shift 2 ;;
+        --download-weights) DOWNLOAD_WEIGHTS=1; shift ;;
+        --download-eval-data) DOWNLOAD_EVAL_DATA=1; shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
 
 case "$TARGET" in
+    --instance-data)
+        VENV_DIR="${VENV_DIR:-.venv}"
+        PYTHON_VERSION="${PYTHON_VERSION:-3.10}"
+        ;;
+    --reward-eval)
+        VENV_DIR="${VENV_DIR:-.venv}"
+        PYTHON_VERSION="${PYTHON_VERSION:-3.10}"
+        ;;
     --mi-cosmos)
         VENV_DIR="${VENV_DIR:-.venv-mi}"
         PYTHON_VERSION="${PYTHON_VERSION:-3.10}"
@@ -99,7 +138,7 @@ case "$TARGET" in
         exit 1
         ;;
     *)
-        echo "Unknown target: $TARGET (use --mi-cosmos or --rlpd)" >&2
+        echo "Unknown target: $TARGET (use --instance-data, --reward-eval, --mi-cosmos, or --rlpd)" >&2
         exit 1
         ;;
 esac
@@ -122,9 +161,116 @@ echo "[install] uv version: $(uv --version)"
 echo "[install] Target: $TARGET  |  venv: $VENV_DIR  |  python: $PYTHON_VERSION"
 
 # ==================================================================
+# Instance data environment: --instance-data
+# ==================================================================
+if [ "$TARGET" = "--instance-data" ]; then
+    COSMOS_DIR="$VENV_DIR/src/cosmos-predict2.5"
+    SAM3_DIR="$VENV_DIR/src/sam3"
+    MODEL_DIR="$VENV_DIR/models"
+
+    if [ -d "$VENV_DIR" ] && [ -f "$VENV_DIR/bin/activate" ]; then
+        echo "[install] Reusing existing venv at $VENV_DIR"
+    else
+        uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+    fi
+    source "$VENV_DIR/bin/activate"
+    mkdir -p "$VENV_DIR/src" "$MODEL_DIR"
+
+    if [ ! -d "$COSMOS_DIR/.git" ]; then
+        echo "[install] Cloning Cosmos-Predict2.5 into $COSMOS_DIR..."
+        git clone https://github.com/nvidia-cosmos/cosmos-predict2.5.git "$COSMOS_DIR"
+        git -C "$COSMOS_DIR" checkout "$COSMOS_GIT_REF"
+    fi
+    if [ ! -d "$SAM3_DIR/.git" ]; then
+        echo "[install] Cloning SAM3 into $SAM3_DIR..."
+        git clone "$SAM3_REPO_URL" "$SAM3_DIR"
+    fi
+    if [ -n "$SAM3_GIT_REF" ]; then
+        git -C "$SAM3_DIR" checkout "$SAM3_GIT_REF"
+    fi
+
+    echo "[install] Installing the instance-data Python environment..."
+    uv pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0
+    uv pip install \
+        mujoco==3.3.2 \
+        transformers==5.2.0 \
+        numpy scipy pillow opencv-python-headless \
+        pyyaml omegaconf einops tqdm rich pytest \
+        accelerate safetensors imageio matplotlib pandas \
+        huggingface_hub[cli] datasets
+    uv pip install -e "$SAM3_DIR"
+    uv pip install -e "$COSMOS_DIR"
+    uv pip install -e "$COSMOS_DIR/packages/cosmos-oss[cu128_torch27]"
+    if [ "$INSTALL_PROJECT" -eq 1 ]; then
+        uv pip install -e "$REPO_ROOT" --no-deps
+    fi
+
+    if [ "$DOWNLOAD_WEIGHTS" -eq 1 ]; then
+        echo "[install] Downloading model weights into $MODEL_DIR..."
+        hf download "$SAM3_MODEL_ID" --local-dir "$MODEL_DIR/sam3"
+        hf download "$COSMOS_PREDICT_MODEL_ID" --local-dir "$MODEL_DIR/cosmos-predict2.5"
+        hf download "$COSMOS_TRANSFER_MODEL_ID" --local-dir "$MODEL_DIR/cosmos-transfer2.5"
+        hf download "$DINO_MODEL_ID" --local-dir "$MODEL_DIR/dinov3-vitb16-pretrain-lvd1689m"
+        hf download "$LAM_MODEL_ID" --local-dir "$MODEL_DIR/lawam_lam"
+    else
+        echo "[install] Weights not downloaded. Re-run with --download-weights after HF login."
+    fi
+
+    echo "[install] Data environment ready: source $VENV_DIR/bin/activate"
+    echo "[install] MuJoCo headless default: MUJOCO_GL=egl"
+
+# ==================================================================
+# RBM-EVAL environment: --reward-eval
+# ==================================================================
+elif [ "$TARGET" = "--reward-eval" ]; then
+    ROBOMETER_DIR="$VENV_DIR/src/robometer"
+    EVAL_DATA_DIR="$VENV_DIR/datasets/robometer"
+
+    if [ -d "$VENV_DIR" ] && [ -f "$VENV_DIR/bin/activate" ]; then
+        echo "[install] Reusing existing venv at $VENV_DIR"
+    else
+        uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+    fi
+    source "$VENV_DIR/bin/activate"
+    mkdir -p "$VENV_DIR/src" "$EVAL_DATA_DIR"
+
+    if [ ! -d "$ROBOMETER_DIR/.git" ]; then
+        echo "[install] Cloning Robometer/RBM-EVAL into $ROBOMETER_DIR..."
+        git clone "$ROBOMETER_REPO_URL" "$ROBOMETER_DIR"
+    fi
+    # Robometer's full dependency set pins incompatible Torch/CUDA versions.
+    git -C "$ROBOMETER_DIR" fetch --quiet origin "$ROBOMETER_GIT_REF" || true
+    git -C "$ROBOMETER_DIR" checkout --quiet --detach "$ROBOMETER_GIT_REF"
+
+    echo "[install] Installing RBM-EVAL adapter dependencies (without Robometer extras)..."
+    uv pip install torch==2.7.0 torchvision==0.22.0
+    uv pip install \
+        transformers==5.2.0 numpy scipy pillow opencv-python-headless \
+        pyyaml omegaconf einops tqdm rich matplotlib imageio \
+        huggingface_hub[cli] hatchling scikit-learn seaborn h5py \
+        pydantic datasets hydra-core loguru termcolor codetiming \
+        wandb tensorboard sentence-transformers decord
+    uv pip install -e "$ROBOMETER_DIR" --no-deps
+    if [ "$INSTALL_PROJECT" -eq 1 ]; then
+        uv pip install -e "$REPO_ROOT" --no-deps
+    fi
+
+    if [ "$DOWNLOAD_EVAL_DATA" -eq 1 ]; then
+        echo "[install] Downloading Robometer processed datasets into $EVAL_DATA_DIR..."
+        hf download robometer/processed_datasets --repo-type dataset --local-dir "$EVAL_DATA_DIR"
+        echo "[install] Extracting Robometer processed dataset archives..."
+        ROBOMETER_PROCESSED_DATASETS_PATH="$EVAL_DATA_DIR" \
+            bash "$ROBOMETER_DIR/scripts/untar_processed_datasets.sh"
+    else
+        echo "[install] Evaluation data not downloaded. Re-run with --download-eval-data after HF login."
+    fi
+    echo "[install] RBM-EVAL source commit: $(git -C "$ROBOMETER_DIR" rev-parse HEAD)"
+    echo "[install] RBM-EVAL environment ready: source $VENV_DIR/bin/activate"
+
+# ==================================================================
 # Training env: --mi-cosmos
 # ==================================================================
-if [ "$TARGET" = "--mi-cosmos" ]; then
+elif [ "$TARGET" = "--mi-cosmos" ]; then
     COSMOS_DIR="$REPO_ROOT/.venv/cosmos-predict2.5"
 
     # ---- git clone cosmos (no venv needed) ----
