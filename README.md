@@ -1,16 +1,6 @@
 # MI-Directional Reward Pretraining from World-Model Futures
 
-*A modular mutual-information reward-learning extension built on [RLinf/LaWAM](https://github.com/RLinf/LaWAM).*
-
-<p>
-  <a href="https://arxiv.org/abs/2606.15768"><img alt="arXiv" height="24" src="https://img.shields.io/badge/arXiv-2606.15768-b31b1b.svg"></a>
-  <a href="https://rlinf.github.io/LaWAM/"><img alt="Project Page" height="24" src="https://img.shields.io/badge/Project_Page-LaWAM-2ea44f.svg"></a>
-  <a href="https://nemo-1024.github.io/blogs/lawam/"><img alt="Blog" height="24" src="https://img.shields.io/badge/Blog-LaWAM-0a66c2.svg"></a>
-  <br>
-  <a href="https://huggingface.co/collections/jialei02/lawam-checkpoints"><img alt="Hugging Face Model Collection" src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model%20Collection-f7c843"></a>
-  <a href="https://huggingface.co/datasets/jialei02/libero_merged_no_noops_20hz"><img alt="Hugging Face Dataset - LIBERO" src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Dataset%20LIBERO-f7c843"></a>
-  <a href="https://huggingface.co/datasets/jialei02/robotwin_merged"><img alt="Hugging Face Dataset - RoboTwin" src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Dataset%20RoboTwin-f7c843"></a>
-</p>
+*Mutual-information supervision for directional robot reward learning from imagined futures.*
 
 ---
 
@@ -251,75 +241,23 @@ train_lawam_distributed.sh Multi-node LaWAM training entrypoint
 
 ### Instance Data Environment
 
-Install the single `.venv` used by Stage 1. All third-party source trees are
-placed in `.venv/src`, Python packages are installed into `.venv`, and model
-weights go in `.venv/models`.
-
-```bash
-bash requirements/install.sh --instance-data
-# Add --download-weights after Hugging Face login to fetch SAM3, Cosmos
-# Predict/Transfer, DINOv3, and LAM checkpoints into .venv/models.
-source .venv/bin/activate
-```
-
-The MuJoCo backend is the fixed simulator for the rigid MVP. The data script
-sets `MUJOCO_GL=egl` for headless rendering.
-
-Before the non-dry-run data command, fill `execution.stages` in
-`mi_reward/configs/instance_geoprogress.yaml` with the release-specific SAM3,
-Cosmos Transfer/Predict, simulator, and planner commands. Every command uses
-the installed `.venv/bin/python` through the `{python}` token and must produce
-the JSONL hand-off required by the orchestrator. An empty stage list is only
-the pre-generated-candidate ingest mode; it does not launch model inference.
+The shared `.venv` contains SAM3, Cosmos, MuJoCo, feature extraction, and the
+instance-data tools. Installation, local weights, headless rendering, and
+worker configuration are documented in
+[`docs/mi_reward_end_to_end.rst`](docs/mi_reward_end_to_end.rst).
 
 ### RBM-EVAL Environment
 
-Install the complete Robometer/RBM-EVAL source tree into the shared `.venv`
-without allowing its incompatible Torch 2.8 dependency pins to replace the
-Cosmos/SAM3 stack. The source is checked out at a fixed commit under
-`.venv/src/robometer`; optional processed benchmark data is stored under
-`.venv/datasets/robometer`. The download option also runs Robometer's official
-archive extraction script so the sampler can load the cache directly.
-
-```bash
-bash requirements/install.sh --reward-eval
-# After Hugging Face login, download the processed RBM-1M cache:
-bash requirements/install.sh --reward-eval --download-eval-data
-```
-
-Run the independent evaluation stage with one launcher and one YAML file:
-
-```bash
-bash eval/run_rbm_eval.sh --config eval/configs/rbm_eval.yaml
-```
-
-The adapter uses Robometer's official `reward_alignment`, `policy_ranking`, and
-`quality_preference` samplers and metric compilers. It supports the local
-`StatePotentialRewardModel` and legacy `TrajectoryRewardHead` checkpoints. A
-`GeoProgressPotential` checkpoint is accepted only when
-`geoprogress.relation_sidecar` supplies measured relations and an explicit
-successful goal (`goal_frames` or `goal_tokens_path`) for every benchmark
-trajectory. RBM-EVAL videos do not contain those geometry inputs, so missing
-sidecars fail loudly instead of producing scores from fabricated zero relations.
-Results are written to `results/rbm_eval/mi_reward/metrics.json` plus per-dataset
-raw result files.
+The complete Robometer installation, dataset download, checkpoint compatibility,
+and launcher instructions are in
+[`docs/mi_reward_end_to_end.rst`](docs/mi_reward_end_to_end.rst).
 
 ### LaWAM Backbone
 
-Clone the repository and create the training environment:
-
-```bash
-git clone https://github.com/RLinf/LaWAM.git LaWAM
-cd LaWAM
-
-# Automated install with uv
-bash requirements/install.sh
-
-# Activate
-source .venv/bin/activate
-```
-
-Or manually:
+This repository already contains the LaWAM backbone and MI reward extension.
+The environment choices and installation commands are documented in
+[`docs/mi_reward_end_to_end.rst`](docs/mi_reward_end_to_end.rst). Manual
+installation is also possible:
 
 ```bash
 conda create -n lawam python=3.10 -y
@@ -593,37 +531,18 @@ python -m mi_reward.evaluation.eval_progress_corr \
 
 ### Instance-Aware Rigid V1
 
-The instance-aware path keeps scene variation, object replacement, physical
-state, and generated RGB separate. It accepts the `pick_place`, `push_shape`,
-and `peg_insertion` task families in one `rigid_v1` manifest. Configure any
-available external stages in `mi_reward/configs/instance_geoprogress.yaml`;
-each worker receives `{request}` and `{result}` paths and must return a JSON
-result containing its `records_path`.
+The instance-aware path supports `pick_place`, `push_shape`, and
+`peg_insertion`. Prepare assets and run the data, SFT, benchmark, and deployment
+stages according to [`docs/mi_reward_end_to_end.rst`](docs/mi_reward_end_to_end.rst).
+The primary entry points are `prepare_instance_data.sh`,
+`run_instance_geoprogress.sh`, and `eval/run_rbm_eval.sh`.
 
-The data-preparation flow uses one command:
+## End-to-End Workflow
 
-```bash
-# Validate all YAML paths and worker hand-offs without launching models.
-bash mi_reward/scripts/prepare_instance_data.sh \
-  --config mi_reward/configs/instance_geoprogress.yaml \
-  --task-suite rigid_v1 \
-  --dry-run
-
-# Run SAM3, Cosmos Transfer/Predict, MuJoCo rollouts, and verification.
-bash mi_reward/scripts/prepare_instance_data.sh \
-  --config mi_reward/configs/instance_geoprogress.yaml \
-  --task-suite rigid_v1
-```
-
-After the manifest is written, start the LaWAM/MI reward stage separately:
-
-```bash
-bash mi_reward/scripts/run_instance_geoprogress.sh \
-  --config mi_reward/configs/instance_geoprogress.yaml
-```
-
-`generate_instance_rollouts.sh` remains as a compatibility alias for
-`prepare_instance_data.sh`.
+The complete six-stage workflow is documented in
+[`docs/mi_reward_end_to_end.rst`](docs/mi_reward_end_to_end.rst), including
+asset preparation, artifact gates, reward-model branch selection, RBM-EVAL, and
+Franka RLPD deployment.
 
 ### Smoke test
 
@@ -1070,6 +989,27 @@ paths must be applied in the local RLinf checkout. Documentation is available at
 - **集成实现报告:** [docs/rlinf_integration/mi_potential_rlpd_implementation_report.md](docs/rlinf_integration/mi_potential_rlpd_implementation_report.md)
 - **代码审计:** [docs/rlinf_integration/mi_potential_rlpd_code_audit.md](docs/rlinf_integration/mi_potential_rlpd_code_audit.md)
 
+The real-robot deployment order is:
+
+```text
+StatePotential checkpoint + metadata.json
+-> copy MIPotentialRewardModel into RLinf
+-> register model_type: mi_potential
+-> add PotentialShapingState to EnvWorker
+-> configure image keys and local encoder
+-> run RLinf dummy mode
+-> validate on simulation/LIBERO
+-> connect Franka with reward_weight=0
+-> gradually enable MI shaping
+```
+
+The deployment is not complete until the RLinf registry and worker wiring have
+been applied. The MI model is a shaping signal only: it must not control
+termination, success detection, collision handling, force limits, workspace
+limits, or emergency stops. The first hardware run must preserve the sparse
+environment reward and use `reward_weight: 0.0` while checking logs and safety
+systems.
+
 ## Design Principles
 
 - **Modularity.** The `mi_reward/` package is self-contained and does not
@@ -1124,24 +1064,8 @@ Checked items are implemented and functional.
 - [ ] Transformer-based reward head with temporal attention
 - [ ] Multi-reference MI aggregation strategies
 
-## Citation
-
-If you use LaWAM in your research, please cite:
-
-```bibtex
-@misc{chen2026lawam,
-  title = {LaWAM: Latent World Action Models for Efficient Dynamics-Aware Robot Policies},
-  author = {Chen, Jialei and Wang, Kai and Chen, Kang and Chen, Shuaihang and Gao, Feng and Tang, Wenhao and Li, Zhiyuan and Liu, Weilin and Yao, Zhuyu and Li, Boxun and Xu, Yuanbo and Yu, Chao},
-  journal = {arXiv preprint arXiv:2606.15768},
-  year = {2026},
-  archiveprefix = {arXiv},
-  primaryclass = {cs.RO},
-}
-```
-
 ## Acknowledgements
 
 This codebase is based on StarVLA and retains its MIT license. The MI-directional
-reward pretraining extension is developed within the RLinf/LaWAM ecosystem. The
-project builds on open-source robotics and VLM components including LeRobot,
-Qwen-VL, DINO, LIBERO, and RoboTwin.
+reward pretraining extension uses open-source robotics and VLM components
+including LeRobot, Qwen-VL, DINO, LIBERO, and RoboTwin.
