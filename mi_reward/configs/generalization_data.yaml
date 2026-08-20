@@ -1,0 +1,153 @@
+# One-command offline data preparation. Real-robot collection is intentionally
+# outside this repository; switch base_data.source to jsonl when RLinf records
+# are connected later.
+task_suite: rigid_v1
+task_family: pick_place
+task_families: [pick_place, push_shape, peg_insertion]
+
+base_data:
+  source: robometer  # robometer | jsonl
+  output_records: dataset/mi_reward/base/robometer_base_records.jsonl
+  # Used only when source: jsonl.
+  input_records: null
+  robometer:
+    processed_root: .venv/datasets/robometer
+    datasets:
+      - jesbu1_usc_koch_p_ranking_rfm_usc_koch_p_ranking_all
+    max_trajectories_per_dataset: 200
+    split: train
+    success_labels: [successful, success]
+    task_rules:
+      - match: '(?i)\b(insert|insertion|peg)\b'
+        task_family: peg_insertion
+        physical_task_config: mi_reward/configs/tasks/peg_insertion_variants.yaml
+        object_prompts:
+          task_object: peg
+          goal: insertion hole
+          robot: robot arm
+      - match: '(?i)\bpush\b'
+        task_family: push_shape
+        physical_task_config: mi_reward/configs/tasks/push_t_to_b.yaml
+        object_prompts:
+          task_object: object being pushed
+          goal: target outline
+          robot: robot arm
+      - match: '(?i)\b(pick|place|put|stack)\b'
+        task_family: pick_place
+        physical_task_config: mi_reward/configs/tasks/pick_place_apple_banana.yaml
+        object_prompts:
+          task_object: object being manipulated
+          goal: destination container
+          robot: robot arm
+
+data_preparation:
+  environment_root: .venv
+  python: .venv/bin/python
+  headless: true
+  mujoco_gl: egl
+  source_roots:
+    sam3: .venv/src/sam3
+    cosmos_predict: .venv/src/cosmos-predict2.5
+    cosmos_transfer: .venv/src/cosmos-transfer2.5
+    robometer: .venv/src/robometer
+  model_roots:
+    sam3: .venv/models/sam3
+    cosmos_predict: .venv/models/cosmos-predict2.5
+    cosmos_transfer: .venv/models/cosmos-transfer2.5
+
+paths:
+  candidate_records: dataset/mi_reward/generalization_rollouts/rigid_v1_records.jsonl
+  manifest: dataset/mi_reward/manifests/generalization_rigid_v1.jsonl
+  success_refs: dataset/mi_reward/manifests/generalization_rigid_v1_success_refs.jsonl
+  feasibility_config: mi_reward/configs/feasibility_rigid.json
+  run_report: results/mi_reward/generalization_rigid_v1/data_report.json
+
+verification:
+  max_pose_step: 0.25
+  require_controls: true
+
+generation:
+  planner_candidates: 2
+  predict_candidates: 1
+  render_width: 640
+  render_height: 480
+  planner_seed: 0
+  transfer_gpus: 2
+
+execution:
+  stages:
+    - name: sam3
+      input_records: dataset/mi_reward/base/robometer_base_records.jsonl
+      output_records: dataset/mi_reward/generalization_rollouts/sam3_records.jsonl
+      command:
+        - '{python}'
+        - -m
+        - mi_reward.perception.sam3_worker
+        - --request
+        - '{request}'
+        - --result
+        - '{result}'
+        - --checkpoint-root
+        - .venv/models/sam3
+    - name: planner
+      output_records: dataset/mi_reward/generalization_rollouts/planner_records.jsonl
+      command:
+        - '{python}'
+        - -m
+        - mi_reward.planning.rigid_task_planner
+        - --request
+        - '{request}'
+        - --result
+        - '{result}'
+        - --num-candidates
+        - '{planner_candidates}'
+        - --seed
+        - '{planner_seed}'
+    - name: simulator
+      output_records: dataset/mi_reward/generalization_rollouts/physical_records.jsonl
+      command:
+        - '{python}'
+        - -m
+        - mi_reward.sim.mujoco_generalization_worker
+        - --request
+        - '{request}'
+        - --result
+        - '{result}'
+        - --width
+        - '{render_width}'
+        - --height
+        - '{render_height}'
+    - name: predict
+      output_records: dataset/mi_reward/generalization_rollouts/predict_records.jsonl
+      command:
+        - '{python}'
+        - -m
+        - mi_reward.data.cosmos_predict_worker
+        - --request
+        - '{request}'
+        - --result
+        - '{result}'
+        - --cosmos-repo
+        - .venv/src/cosmos-predict2.5
+        - --checkpoint-root
+        - .venv/models/cosmos-predict2.5
+        - --num-candidates
+        - '{predict_candidates}'
+    - name: transfer
+      output_records: dataset/mi_reward/generalization_rollouts/rigid_v1_records.jsonl
+      command:
+        - '{python}'
+        - -m
+        - mi_reward.data.cosmos_transfer_worker
+        - --request
+        - '{request}'
+        - --result
+        - '{result}'
+        - --transfer-repo
+        - .venv/src/cosmos-transfer2.5
+        - --variants
+        - mi_reward/configs/scene_variants.yaml
+        - --num-gpus
+        - '{transfer_gpus}'
+        - --checkpoint-path
+        - .venv/models/cosmos-transfer2.5/general/depth/626e6618-bfcd-4d9a-a077-1409e2ce353f_ema_bf16.pt

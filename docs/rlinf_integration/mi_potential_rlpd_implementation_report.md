@@ -50,10 +50,10 @@ result = model.predict_potential(observations, task_descriptions)
 
 | File | RLinf Target Location | Purpose |
 |---|---|---|
-| `docs/rlinf_integration/rlinf_workers_reward/mi_potential_reward_model.py` | `rlinf/workers/reward/` | `MIPotentialRewardModel` adapter, registers `model_type: "mi_potential"` |
-| `docs/rlinf_integration/rlinf_workers_env/potential_shaping_state.py` | `rlinf/workers/env/` | `PotentialShapingState` — per-env cache, delta computation, reset handling |
-| `docs/rlinf_integration/rlinf_data/mi_progress_sampler.py` | `rlinf/data/` | `MIProgressStratifiedSampler` — Phase B guided replay (optional) |
-| `docs/rlinf_integration/config/realworld_peginsertion_rlpd_cnn_async_mi_potential.yaml` | `examples/embodiment/config/` | Full Hydra config with potential shaping |
+| `.integrations/rlinf/reward/mi_potential_reward_model.py` | `rlinf/workers/reward/` | `MIPotentialRewardModel` adapter, registers `model_type: "mi_potential"` |
+| `.integrations/rlinf/env/potential_shaping_state.py` | `rlinf/workers/env/` | `PotentialShapingState` — per-env cache, delta computation, reset handling |
+| `.integrations/rlinf/data/mi_progress_sampler.py` | `rlinf/data/` | `MIProgressStratifiedSampler` — Phase B guided replay (optional) |
+| `.integrations/rlinf/config/realworld_peginsertion_rlpd_cnn_async_mi_potential.yaml` | `examples/embodiment/config/` | Full Hydra config with potential shaping |
 
 ## 4. Checkpoint Contract
 
@@ -186,20 +186,24 @@ Episode timeline:
 
 ## 13. Files Summary
 
-### New files (9)
+### Repository files and integration templates
 ```
 mi_reward/inference/__init__.py
 mi_reward/inference/potential_model.py
 docs/rlinf_integration/mi_potential_rlpd_code_audit.md
-docs/rlinf_integration/rlinf_workers_reward/mi_potential_reward_model.py
-docs/rlinf_integration/rlinf_workers_env/potential_shaping_state.py
-docs/rlinf_integration/rlinf_data/mi_progress_sampler.py
-docs/rlinf_integration/config/realworld_peginsertion_rlpd_cnn_async_mi_potential.yaml
 docs/rlinf_integration/mi_potential_rlpd_implementation_report.md
 tests/test_mi_potential_rlpd_integration.py
 ```
 
-### No existing files modified
+The RLinf drop-in templates listed in Section 3.2 live under the hidden
+``.integrations/rlinf/`` directory so they are separated from the package
+source while remaining versioned and available for deployment.
+
+### Repository boundary
+
+The RLinf checkout is not modified by this repository. The files under
+``.integrations/rlinf/`` are copied into RLinf only during the deployment
+integration step described in ``franka_mi_potential_rlpd.rst``.
 
 ## 14. Next Steps
 

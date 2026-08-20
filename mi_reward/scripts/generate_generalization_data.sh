@@ -16,7 +16,7 @@ fi
 export MUJOCO_GL="${MUJOCO_GL:-egl}"
 export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
 
-CONFIG="mi_reward/configs/generalization_reward.yaml"
+CONFIG="mi_reward/configs/generalization_data.yaml"
 ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in

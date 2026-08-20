@@ -1,9 +1,4 @@
-"""Configuration-driven ingestion entry point for generalization rollout workers.
-
-SAM3, simulator, Transfer, and Predict workers are intentionally external. They
-write candidate records under the configured run directory; this module validates
-and ingests those records into the reward-training manifest.
-"""
+"""Configuration-driven generalization data preparation entry point."""
 
 from __future__ import annotations
 
@@ -13,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from mi_reward.data.instance_orchestrator import reports_as_dict, run_configured_stages
+from mi_reward.data.base_trajectory_schema import BaseTrajectory
 from mi_reward.data.schema import SuccessReference, TrajectoryExample, read_jsonl
 
 
@@ -51,6 +47,7 @@ def validate_config(config: dict[str, Any]) -> dict[str, str]:
         "candidate_records": str(_required(paths, "candidate_records")),
         "manifest": str(_required(paths, "manifest")),
         "feasibility_config": str(_required(paths, "feasibility_config")),
+        "success_refs": str(_required(paths, "success_refs")),
         "task_family": primary_task_family,
         "task_families": json.dumps(raw_task_families),
         "max_pose_step": str(verification.get("max_pose_step", 0.25)),
@@ -58,6 +55,77 @@ def validate_config(config: dict[str, Any]) -> dict[str, str]:
     }
     values["run_report"] = str(paths.get("run_report") or Path(values["manifest"]).with_suffix(".run_report.json"))
     return values
+
+
+def _prepare_base_data(config: dict[str, Any], *, dry_run: bool) -> dict[str, object]:
+    base_data = config.get("base_data")
+    if not isinstance(base_data, dict):
+        raise ValueError("Configuration requires a base_data mapping.")
+    source = str(_required(base_data, "source"))
+    output_records = Path(str(_required(base_data, "output_records"))).resolve()
+    paths = config.get("paths")
+    if not isinstance(paths, dict):
+        raise ValueError("Configuration requires paths.")
+    success_refs = Path(str(_required(paths, "success_refs"))).resolve()
+    if source == "robometer":
+        robometer = base_data.get("robometer")
+        if not isinstance(robometer, dict):
+            raise ValueError("base_data.robometer must be a mapping.")
+        if dry_run:
+            datasets = robometer.get("datasets")
+            if not isinstance(datasets, list) or not datasets:
+                raise ValueError("base_data.robometer.datasets must be a non-empty list.")
+            return {
+                "source": source,
+                "status": "validated",
+                "output_records": str(output_records),
+                "success_refs": str(success_refs),
+                "datasets": [str(value) for value in datasets],
+            }
+        from mi_reward.data.robometer_ingest import ingest_robometer
+
+        return ingest_robometer(robometer, output_records, success_refs)
+    if source == "jsonl":
+        input_records = Path(str(_required(base_data, "input_records"))).resolve()
+        if not input_records.is_file():
+            raise FileNotFoundError(f"Base trajectory JSONL is missing: {input_records}")
+        _validate_base_records(input_records)
+        if input_records != output_records:
+            output_records.parent.mkdir(parents=True, exist_ok=True)
+            output_records.write_text(input_records.read_text(encoding="utf-8"), encoding="utf-8")
+        if not success_refs.is_file():
+            raise FileNotFoundError(f"Success-reference JSONL is missing: {success_refs}")
+        return {
+            "source": source,
+            "status": "ready",
+            "input_records": str(input_records),
+            "output_records": str(output_records),
+            "success_refs": str(success_refs),
+        }
+    raise ValueError("base_data.source must be `robometer` or `jsonl`.")
+
+
+def _validate_base_records(path: Path) -> int:
+    """Validate the external RLinf bridge before any model worker is launched."""
+
+    count = 0
+    for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid base-record JSONL at {path}:{line_no}.") from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"Base record at {path}:{line_no} must be a JSON object.")
+        try:
+            BaseTrajectory.from_dict(payload)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid BaseTrajectory at {path}:{line_no}: {exc}") from exc
+        count += 1
+    if count == 0:
+        raise ValueError(f"Base trajectory JSONL is empty: {path}")
+    return count
 
 
 def validate_training_manifest(path: str | Path, success_refs: str | Path | None = None) -> dict[str, object]:
@@ -140,7 +208,19 @@ def main() -> None:
     feasibility_path = Path(values["feasibility_config"])
     if not feasibility_path.is_file():
         raise FileNotFoundError(f"Feasibility config not found: {feasibility_path}")
-    stage_reports = run_configured_stages(config, dry_run=args.dry_run)
+    base_report = _prepare_base_data(config, dry_run=args.dry_run)
+    base_output = Path(str(base_report["output_records"])).resolve()
+    execution = config.get("execution")
+    raw_stages = execution.get("stages") if isinstance(execution, dict) else None
+    if isinstance(raw_stages, list) and raw_stages:
+        first_input = raw_stages[0].get("input_records") if isinstance(raw_stages[0], dict) else None
+        if first_input and Path(str(first_input)).resolve() != base_output:
+            raise ValueError("The first worker input_records must equal base_data.output_records.")
+    stage_reports = run_configured_stages(
+        config,
+        dry_run=args.dry_run,
+        allow_missing_first_input=args.dry_run and str(base_report.get("source")) == "robometer",
+    )
     stages = reports_as_dict(stage_reports)
     if stage_reports and Path(stage_reports[-1].output_records).resolve() != Path(values["candidate_records"]).resolve():
         raise ValueError(
@@ -148,7 +228,12 @@ def main() -> None:
             f"got {stage_reports[-1].output_records} versus {values['candidate_records']}."
         )
     if args.dry_run:
-        print(json.dumps({"config": str(config_path), "validated": values, "stages": stages}, indent=2))
+        print(
+            json.dumps(
+                {"config": str(config_path), "validated": values, "base_data": base_report, "stages": stages},
+                indent=2,
+            )
+        )
         return
     feasibility_payload = json.loads(feasibility_path.read_text(encoding="utf-8"))
     if not isinstance(feasibility_payload, dict):
@@ -189,6 +274,7 @@ def main() -> None:
             "accepted_candidates": accepted,
             "rejected_candidates": rejected,
             "stages": stages,
+            "base_data": base_report,
         },
     )
     print(f"Wrote {len(examples)} candidates to {values['manifest']} ({accepted} accepted).")

@@ -2,8 +2,9 @@
 # LaWAM + MI Reward Extension — automated environment setup with uv.
 #
 # Usage:
+#   bash requirements/install.sh --all             # shared .venv: all data/eval tools
 #   bash requirements/install.sh --generalization-data  # .venv: SAM3/Cosmos/MuJoCo data generation
-#   bash requirements/install.sh --reward-eval    # .venv: Robometer/RBM-EVAL adapter
+#   bash requirements/install.sh --reward-eval     # .venv: Robometer/RBM-EVAL adapter
 #   bash requirements/install.sh --mi-cosmos      # Training env: cosmos + DINO + MI reward (8×A800)
 #   bash requirements/install.sh --rlpd           # Inference env: DINOv3 + RewardHead + Ray (NUC + 4090)
 #   bash requirements/install.sh --help
@@ -22,13 +23,14 @@ cd "$REPO_ROOT"
 VENV_DIR=""
 PYTHON_VERSION=""
 TARGET=""
+INSTALL_ALL=0
 USE_MIRRORS=0
 INSTALL_FLASH_ATTN=1
 INSTALL_PROJECT=1
 COSMOS_GIT_REF="${COSMOS_GIT_REF:-a2c298b0a3df3778b973fe65e9e58877b292d8a7}"
 COSMOS_TRANSFER_GIT_REF="${COSMOS_TRANSFER_GIT_REF:-2ff49d0717af02057ae79bc75c00fbff9da1b4e7}"
 SAM3_REPO_URL="${SAM3_REPO_URL:-https://github.com/facebookresearch/sam3.git}"
-SAM3_GIT_REF="${SAM3_GIT_REF:-}"
+SAM3_GIT_REF="${SAM3_GIT_REF:-8f0b7f4d4e7eda2ed606ebde6702c93359ad01da}"
 SAM3_MODEL_ID="${SAM3_MODEL_ID:-facebook/sam3}"
 COSMOS_PREDICT_MODEL_ID="${COSMOS_PREDICT_MODEL_ID:-nvidia/Cosmos-Predict2.5-2B}"
 COSMOS_TRANSFER_MODEL_ID="${COSMOS_TRANSFER_MODEL_ID:-nvidia/Cosmos-Transfer2.5-2B}"
@@ -39,6 +41,7 @@ ROBOMETER_GIT_REF="${ROBOMETER_GIT_REF:-352d160389daa964788de1ec933d1925f3a6de4f
 DOWNLOAD_WEIGHTS=0
 DOWNLOAD_EVAL_DATA=0
 GITHUB_PREFIX=""
+PYTORCH_INDEX_URL="${PYTORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}"
 
 # ------------------------------------------------------------------
 # Mirror helpers
@@ -72,6 +75,7 @@ print_help() {
 Usage: bash requirements/install.sh <target> [options]
 
 Targets (mutually exclusive):
+    --all                  Install all data-generation and RBM-EVAL tools into .venv.
     --generalization-data  Data-generation environment with SAM3, Cosmos, and MuJoCo.
                            Creates .venv and stores source/checkpoints under .venv/.
     --reward-eval          RBM-EVAL environment in the shared .venv.
@@ -92,6 +96,7 @@ Options:
                            Requires Hugging Face access and uses *_MODEL_ID overrides.
     --download-eval-data   Download Robometer processed evaluation datasets into .venv/datasets/robometer.
                            Requires Hugging Face access; can also be run later with the same target.
+    PYTORCH_INDEX_URL      Environment override for the CUDA PyTorch wheel index (default: cu128).
     -h, --help             Show this help.
 EOF
 }
@@ -120,6 +125,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$TARGET" in
+    --all)
+        INSTALL_ALL=1
+        TARGET="--generalization-data"
+        VENV_DIR=".venv"
+        PYTHON_VERSION="3.10"
+        ;;
     --generalization-data)
         VENV_DIR="${VENV_DIR:-.venv}"
         PYTHON_VERSION="${PYTHON_VERSION:-3.10}"
@@ -141,7 +152,7 @@ case "$TARGET" in
         exit 1
         ;;
     *)
-        echo "Unknown target: $TARGET (use --generalization-data, --reward-eval, --mi-cosmos, or --rlpd)" >&2
+        echo "Unknown target: $TARGET (use --all, --generalization-data, --reward-eval, --mi-cosmos, or --rlpd)" >&2
         exit 1
         ;;
 esac
@@ -199,14 +210,17 @@ if [ "$TARGET" = "--generalization-data" ]; then
     fi
 
     echo "[install] Installing the generalization-data Python environment..."
-    uv pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0
+    uv pip install \
+        torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 \
+        --index-url "$PYTORCH_INDEX_URL"
     uv pip install \
         mujoco==3.3.2 \
         transformers==5.2.0 \
         numpy scipy pillow opencv-python-headless \
         pyyaml omegaconf einops tqdm rich pytest \
         accelerate safetensors imageio imageio-ffmpeg matplotlib pandas \
-        huggingface_hub[cli] datasets
+        huggingface_hub[cli] datasets mediapy tyro loguru \
+        moderngl shapely OpenEXR cattrs natsort
     uv pip install -e "$SAM3_DIR"
     uv pip install -e "$COSMOS_DIR"
     uv pip install -e "$COSMOS_DIR/packages/cosmos-oss[cu128_torch27]"
@@ -253,13 +267,15 @@ elif [ "$TARGET" = "--reward-eval" ]; then
     git -C "$ROBOMETER_DIR" checkout --quiet --detach "$ROBOMETER_GIT_REF"
 
     echo "[install] Installing RBM-EVAL adapter dependencies (without Robometer extras)..."
-    uv pip install torch==2.7.0 torchvision==0.22.0
+    uv pip install \
+        torch==2.7.0 torchvision==0.22.0 \
+        --index-url "$PYTORCH_INDEX_URL"
     uv pip install \
         transformers==5.2.0 numpy scipy pillow opencv-python-headless \
         pyyaml omegaconf einops tqdm rich matplotlib imageio \
         huggingface_hub[cli] hatchling scikit-learn seaborn h5py \
         pydantic datasets hydra-core loguru termcolor codetiming \
-        wandb tensorboard sentence-transformers decord
+        wandb tensorboard sentence-transformers decord mediapy tyro loguru
     uv pip install -e "$ROBOMETER_DIR" --no-deps
     if [ "$INSTALL_PROJECT" -eq 1 ]; then
         uv pip install -e "$REPO_ROOT" --no-deps
@@ -303,7 +319,9 @@ elif [ "$TARGET" = "--mi-cosmos" ]; then
 
     # ---- torch 2.7 for CUDA 12.8 (Cosmos requirement) ----
     echo "[install] Installing PyTorch 2.7.0 for CUDA 12.8..."
-    uv pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0
+    uv pip install \
+        torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 \
+        --index-url "$PYTORCH_INDEX_URL"
 
     # ---- flash-attn ----
     if [ "$INSTALL_FLASH_ATTN" -eq 1 ]; then
@@ -360,7 +378,9 @@ elif [ "$TARGET" = "--rlpd" ]; then
     source "$VENV_DIR/bin/activate"
 
     echo "[install] Installing torch + DINO + reward model deps..."
-    uv pip install torch==2.7.0 torchvision==0.22.0
+    uv pip install \
+        torch==2.7.0 torchvision==0.22.0 \
+        --index-url "$PYTORCH_INDEX_URL"
     uv pip install \
         transformers numpy scipy pillow opencv-python-headless \
         pyyaml omegaconf einops tqdm rich pytest \
@@ -378,6 +398,18 @@ elif [ "$TARGET" = "--rlpd" ]; then
     echo "[install]  Reward checkpoint: copy pytorch_model.pt from training."
     echo "[install]  Deploy on NUC + 4090 (shared .venv-rlpd)."
     echo "[install] =========================================="
+fi
+
+# --all is intentionally implemented as two idempotent passes so both source
+# trees and their dependencies share the same .venv without maintaining a
+# second dependency resolver branch here.
+if [ "$INSTALL_ALL" -eq 1 ]; then
+    NEXT_ARGS=(--reward-eval)
+    if [ "$DOWNLOAD_EVAL_DATA" -eq 1 ]; then
+        NEXT_ARGS+=(--download-eval-data)
+    fi
+    bash "$SCRIPT_DIR/install.sh" "${NEXT_ARGS[@]}"
+    exit 0
 fi
 
 # ------------------------------------------------------------------

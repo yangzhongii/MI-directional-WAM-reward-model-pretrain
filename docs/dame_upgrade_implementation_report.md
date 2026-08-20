@@ -1,5 +1,10 @@
 # Dame-Inspired Upgrade: Implementation Report
 
+> Historical snapshot from 2026-07-20. The current Cosmos/SAM3/MuJoCo and
+> Robometer pipeline supersedes the limitations listed below; use
+> [`mi_reward_end_to_end.rst`](mi_reward_end_to_end.rst) as the operational
+> source of truth.
+
 **Date:** 2026-07-20
 **Repository:** MI-directional-WAM-reward-model-pretrain
 **Base:** RLinf/LaWAM

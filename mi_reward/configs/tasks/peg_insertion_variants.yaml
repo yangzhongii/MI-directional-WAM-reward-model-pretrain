@@ -10,3 +10,39 @@ planner: lawam_or_motion_plan
 simulator: mujoco
 predict_model: 2B/robot/action-cond
 transfer_enabled: true
+asset_catalog_version: rigid_v1
+simulation:
+  model_path: assets/custom_task/scene/scene.xml
+  initial_keyframe: home
+  camera_name: global_cam
+  mocap_body_name: ee_target
+  ee_body_name: panda_hand
+  task_object_body_name: task_object
+  goal_body_name: insertion_hole
+  gripper_actuator_name: gripper
+  preserve_body_names: [panda, table, task_object, insertion_hole]
+  object_geom_names: [task_object_geom]
+  gripper_geom_names: [left_finger_geom, right_finger_geom]
+  forbidden_geom_names: [table_geom, wall_geom]
+  require_contact_phases: [grasp, close, lift, transport, align, insert]
+  goal_distance_threshold: 0.04
+  goal_orientation_threshold: 0.35
+planner:
+  steps_per_segment: 4
+  hover_height: 0.10
+  insertion_depth: 0.03
+  gripper_open: 1.0
+  gripper_closed: 0.0
+  candidate_jitter_xy: 0.005
+instances:
+  - variant_id: round_train
+    source_category: peg_round
+    target_category: peg_round
+    asset_uri: builtin://peg_insertion/peg_round
+    task_role: task_object
+  - variant_id: square_heldout
+    source_category: peg_round
+    target_category: peg_square
+    asset_uri: builtin://peg_insertion/peg_square
+    model_path: assets/custom_task/scene/scene_peg_square.xml
+    task_role: task_object

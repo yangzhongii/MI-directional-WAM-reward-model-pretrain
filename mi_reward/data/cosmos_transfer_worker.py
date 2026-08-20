@@ -118,10 +118,22 @@ def _encode_frames(frames: list[Path], output: Path, fps: int) -> tuple[int, int
 
 def _encode_depth(depth_root: Path, output: Path, frame_count: int, size: tuple[int, int], fps: int) -> None:
     ffmpeg = _ffmpeg()
-    paths = sorted(depth_root.glob("*.npy"))
+    paths = sorted(path for path in depth_root.iterdir() if path.suffix.lower() in {".npy", ".npz"})
     if len(paths) != frame_count:
         raise ValueError(f"Expected {frame_count} depth maps in {depth_root}, found {len(paths)}.")
-    arrays = [np.asarray(np.load(path), dtype=np.float32).squeeze() for path in paths]
+    arrays: list[np.ndarray] = []
+    for path in paths:
+        loaded = np.load(path)
+        if isinstance(loaded, np.lib.npyio.NpzFile):
+            try:
+                if not loaded.files:
+                    raise ValueError(f"Depth archive is empty: {path}")
+                value = loaded[loaded.files[0]]
+            finally:
+                loaded.close()
+        else:
+            value = loaded
+        arrays.append(np.asarray(value, dtype=np.float32).squeeze())
     finite_items = [item[np.isfinite(item)] for item in arrays if np.isfinite(item).any()]
     finite = np.concatenate(finite_items) if finite_items else np.asarray([], dtype=np.float32)
     lo, hi = np.percentile(finite, [1.0, 99.0]) if finite.size else (0.0, 1.0)

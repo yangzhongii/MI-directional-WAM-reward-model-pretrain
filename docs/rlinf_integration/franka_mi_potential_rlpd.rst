@@ -148,6 +148,15 @@ Step 2: Configure YAML
 Starting from the existing Franka RLPD config, create
 ``realworld_peginsertion_rlpd_cnn_async_mi_potential.yaml``:
 
+.. code-block:: bash
+
+   cp .integrations/rlinf/config/realworld_peginsertion_rlpd_cnn_async_mi_potential.yaml \
+      /path/to/RLinf/examples/embodiment/config/
+
+Then set ``reward.model.model_path`` to the checkpoint directory on the
+training node. The template can be edited in place for camera keys, task text,
+and hardware-specific settings.
+
 .. code-block:: yaml
    :caption: examples/embodiment/config/realworld_peginsertion_rlpd_cnn_async_mi_potential.yaml
 
@@ -278,7 +287,7 @@ Step 3: Register the MI Potential Model Type
 
 Register the ``mi_potential`` type in RLinf's reward model registry.
 
-Copy ``docs/rlinf_integration/rlinf_workers_reward/mi_potential_reward_model.py``
+Copy ``.integrations/rlinf/reward/mi_potential_reward_model.py``
 to ``rlinf/workers/reward/mi_potential_reward_model.py``, then add to the reward
 worker registry:
 
@@ -289,6 +298,23 @@ worker registry:
    from rlinf.workers.reward.mi_potential_reward_model import MIPotentialRewardModel
 
    REWARD_MODEL_REGISTRY["mi_potential"] = MIPotentialRewardModel
+
+Copy the potential cache helper into the EnvWorker package and call its
+``initialize``, ``compute_delta``, and ``clear`` methods at reset, step, and
+episode-end boundaries:
+
+.. code-block:: bash
+
+   cp .integrations/rlinf/env/potential_shaping_state.py \
+      /path/to/RLinf/rlinf/workers/env/
+
+The replay sampler is optional. Copy it only when
+``algorithm.mi_guided_replay.enabled`` is set to ``true``:
+
+.. code-block:: bash
+
+   cp .integrations/rlinf/data/mi_progress_sampler.py \
+      /path/to/RLinf/rlinf/data/
 
 ----
 

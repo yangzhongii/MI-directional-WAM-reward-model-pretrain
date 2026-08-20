@@ -1,6 +1,5 @@
-# Generalization data and reward-training configuration.
-# Stage 1 generates scene/instance variants and verified rollouts.
-# Stage 2 extracts features, builds directional preferences, and trains SFT.
+# Reward-model training configuration. Data generation is configured separately
+# in mi_reward/configs/generalization_data.yaml.
 task_suite: rigid_v1
 task_family: pick_place
 task_families: [pick_place, push_shape, peg_insertion]
@@ -44,34 +43,6 @@ generation:
   predict_model: 2B/robot/action-cond
   transfer_model: Cosmos-Transfer2.5-2B
 
-# Workers are data-generation components. Configure release-specific commands
-# for SAM3, scene transfer, MuJoCo, planning, and Predict in this section.
-# The fixed order is: sam3 -> simulator -> planner -> predict -> transfer.
-# Each worker receives {request}/{result} and writes records_path in its result.
-execution:
-  stages:
-    # Add configured sam3/simulator/planner/predict workers before this entry
-    # when those stages are not produced by an external base-rollout job.
-    - name: transfer
-      input_records: dataset/mi_reward/generalization_rollouts/predict_records.jsonl
-      output_records: dataset/mi_reward/generalization_rollouts/rigid_v1_records.jsonl
-      command:
-        - "{python}"
-        - "-m"
-        - "mi_reward.data.cosmos_transfer_worker"
-        - "--request"
-        - "{request}"
-        - "--result"
-        - "{result}"
-        - "--transfer-repo"
-        - ".venv/src/cosmos-transfer2.5"
-        - "--variants"
-        - "mi_reward/configs/scene_variants.yaml"
-        - "--num-gpus"
-        - "2"
-        - "--checkpoint-path"
-        - ".venv/models/cosmos-transfer2.5/general/depth/626e6618-bfcd-4d9a-a077-1409e2ce353f_ema_bf16.pt"
-
 features:
   extractor: lawam_lam
   lam_config_path: .venv/models/lawam_lam/dino_large_vae.yaml
@@ -87,6 +58,7 @@ training:
   lr: 0.0001
   gamma: 0.99
   mi_backend: dame_bspline
+  preference_mi_mode: gaussian_mi_proxy
   lambda_rank: 1.0
   lambda_potential: 1.0
   lambda_direction: 0.5

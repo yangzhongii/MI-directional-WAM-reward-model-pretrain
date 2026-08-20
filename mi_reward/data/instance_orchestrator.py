@@ -1,9 +1,9 @@
 """Run the configured external stages for a generalization data run.
 
-SAM3, Cosmos, and simulator environments evolve independently and can require
-different CUDA environments.  This module therefore owns their order and
-artifact hand-off, not their model implementations.  Every stage receives a
-request JSON and writes a result JSON pointing at its JSONL record output.
+Every stage runs from the shared project ``.venv``. This module owns their
+order and artifact hand-off while each worker owns one concrete model/runtime.
+Every stage receives a request JSON and writes a result JSON pointing at its
+JSONL record output.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 
-PIPELINE_ORDER = ("sam3", "simulator", "planner", "predict", "transfer")
+PIPELINE_ORDER = ("sam3", "planner", "simulator", "predict", "transfer")
 
 
 @dataclass(frozen=True)
@@ -102,7 +102,13 @@ def _resolved_path(value: str, root: Path) -> Path:
     return path if path.is_absolute() else root / path
 
 
-def run_configured_stages(config: dict[str, Any], *, root: str | Path = ".", dry_run: bool = False) -> list[StageReport]:
+def run_configured_stages(
+    config: dict[str, Any],
+    *,
+    root: str | Path = ".",
+    dry_run: bool = False,
+    allow_missing_first_input: bool = False,
+) -> list[StageReport]:
     """Validate or execute the configured SAM3/Transfer/simulation pipeline.
 
     The previous stage's JSONL becomes the next stage's input unless an
@@ -119,6 +125,12 @@ def run_configured_stages(config: dict[str, Any], *, root: str | Path = ".", dry
         python_executable = str(preparation["python"])
     reports: list[StageReport] = []
     previous_output: Path | None = None
+    generation = config.get("generation", {})
+    substitutions = {
+        "python": python_executable,
+    }
+    if isinstance(generation, dict):
+        substitutions.update({str(key): str(value) for key, value in generation.items()})
     for stage in stages:
         input_path = _resolved_path(stage.input_records, base) if stage.input_records else previous_output
         if input_path is None:
@@ -128,7 +140,11 @@ def run_configured_stages(config: dict[str, Any], *, root: str | Path = ".", dry
             # The first stage must be grounded in a real request manifest.
             # Later implicit inputs are outputs that this dry run deliberately
             # does not create.
-            if stage.input_records is not None and not input_path.is_file():
+            if (
+                stage.input_records is not None
+                and not input_path.is_file()
+                and not (allow_missing_first_input and not reports)
+            ):
                 raise FileNotFoundError(f"Dry run requires stage input records: {input_path}")
             record_count = _read_jsonl_objects(input_path) if input_path.is_file() else 0
             reports.append(
@@ -160,15 +176,16 @@ def run_configured_stages(config: dict[str, Any], *, root: str | Path = ".", dry
             ),
             encoding="utf-8",
         )
-        # Worker commands can legitimately contain JSON or Python dicts.  A
-        # broad ``str.format`` would treat those braces as placeholders, so the
-        # interface only substitutes its two documented tokens.
-        command = [
-            item.replace("{python}", python_executable)
-            .replace("{request}", str(request_path))
-            .replace("{result}", str(result_path))
-            for item in stage.command
-        ]
+        # Worker commands can legitimately contain JSON or Python dicts. A
+        # broad ``str.format`` would treat those braces as placeholders, so we
+        # substitute only documented request/result and generation keys.
+        substitutions.update({"request": str(request_path), "result": str(result_path)})
+        command = []
+        for item in stage.command:
+            rendered = item
+            for key, value in substitutions.items():
+                rendered = rendered.replace("{" + key + "}", value)
+            command.append(rendered)
         completed = subprocess.run(command, check=False, capture_output=True, text=True)
         if completed.returncode != 0:
             raise RuntimeError(f"{stage.name} worker failed (rc={completed.returncode}): {completed.stderr[-2000:]}")

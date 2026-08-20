@@ -40,6 +40,7 @@ EPOCHS="$(read_config "c['training']['epochs']")"
 LR="$(read_config "c['training']['lr']")"
 GAMMA="$(read_config "c['training']['gamma']")"
 MI_BACKEND="$(read_config "c['training']['mi_backend']")"
+PREFERENCE_MI_MODE="$(read_config "c['training'].get('preference_mi_mode', 'gaussian_mi_proxy')")"
 LAMBDA_RANK="$(read_config "c['training']['lambda_rank']")"
 LAMBDA_POTENTIAL="$(read_config "c['training']['lambda_potential']")"
 LAMBDA_DIRECTION="$(read_config "c['training']['lambda_direction']")"
@@ -54,7 +55,7 @@ python -m mi_reward.features.cached_feature_store \
 
 PREFERENCE_ARGS=(--manifest "$MANIFEST" --success_refs "$SUCCESS_REFS" --feature_root "$FEATURE_ROOT" \
     --output "$PREFERENCES" --token_features --relation_weight "$RELATION_WEIGHT" \
-    --teacher_version generalization_directional_v1 --gamma "$GAMMA" --mi_mode gaussian_mi_proxy)
+    --teacher_version generalization_directional_v1 --gamma "$GAMMA" --mi_mode "$PREFERENCE_MI_MODE")
 if [ "$DIRECTIONAL" = "True" ] || [ "$DIRECTIONAL" = "true" ]; then
     PREFERENCE_ARGS+=(--directional-alignment \
         --directional_w_endpoint "$(read_config "c['training']['directional_w_endpoint']")" \

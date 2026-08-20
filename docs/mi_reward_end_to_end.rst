@@ -1,91 +1,120 @@
 .. _mi_reward_end_to_end:
 
 ============================================================
-MI Reward: End-to-End Workflow
+MI Reward: Installation and End-to-End Workflow
 ============================================================
 
-This document is the operational guide for the complete project:
+This is the operational document for the offline data and reward-model
+pipeline. The project uses one shared ``.venv`` for every third-party tool:
+SAM3, MuJoCo, Cosmos Predict2.5, Cosmos Transfer2.5, Robometer/RBM-EVAL, and
+their local model weights. Real-robot collection is outside this repository;
+RLinf remains the source of those records.
+
+The fixed order is:
 
 .. code-block:: text
 
-   environment -> assets -> future data -> reward SFT -> RBM-EVAL -> Franka RLPD
+   base visual trajectory
+     -> SAM3 masks
+     -> rigid task planner
+     -> MuJoCo physical completion
+     -> Cosmos Predict action-conditioned rollout
+     -> Cosmos Transfer scene variation
+     -> verified manifest
+     -> LaWAM directional reward SFT
+     -> RBM-EVAL
+     -> RLinf deployment
 
-The workflow has two reward-model branches. The generalization reward is the
-relation-conditioned directional branch (implemented by ``GeoProgressPotential``).
-``StatePotentialRewardModel`` is
-the RGB/feature branch intended for RBM-EVAL and the standard RLinf potential
-shaping adapter. A GeoProgress checkpoint must not be silently treated as an
-RGB-only checkpoint.
+The data-generation launcher is ``mi_reward/scripts/generate_generalization_data.sh``
+with ``mi_reward/configs/generalization_data.yaml``. The reward-training
+launcher is ``mi_reward/scripts/run_generalization_reward.sh`` with
+``mi_reward/configs/generalization_reward.yaml``.
 
-Status at a glance
-==================
+Status and boundaries
+=====================
 
-+-------+---------------------------------------+----------------------------------------------+
-| Stage | Main entry point                      | Status                                       |
-+=======+=======================================+==============================================+
-| 1     | ``requirements/install.sh``           | Environment scripts implemented              |
-| 2     | Task YAML and assets                  | User assets required                         |
-| 3     | ``generate_generalization_data.sh``   | Transfer worker implemented; SAM3/MuJoCo/   |
-|       |                                       | planner/Predict workers remain configurable  |
-| 4     | ``run_generalization_reward.sh``      | Directional reward SFT implemented           |
-| 5     | ``eval/run_rbm_eval.sh``              | Implemented for compatible checkpoints       |
-| 6     | RLinf integration                     | Adapter scaffold; manual wiring and hardware |
-|       |                                       | validation remain                            |
-+-------+---------------------------------------+----------------------------------------------+
+The following components are implemented in this repository:
 
-Stage 1: Install environments
-==============================
+* Robometer processed-dataset ingestion into a canonical base-record JSONL;
+* SAM3 text-prompt mask materialization;
+* rule-based pick/place, push, and peg-insertion Cartesian phase planning;
+* headless MuJoCo rendering and physical sidecar export;
+* Cosmos Predict2.5 action-conditioned rollout invocation;
+* Cosmos Transfer2.5 depth-control scene variation;
+* strict artifact validation, MI directional preference construction, and SFT.
 
-Run all commands from the repository root:
+The following inputs are intentionally external:
+
+* real Franka/RLinf teleoperation and its hardware logs;
+* the MuJoCo XML/mesh/material files for a user's robot and scene;
+* task-specific SAM3 prompts and target-instance geometry;
+* a compatible RLinf checkout for the final deployment wiring.
+
+Robometer is not a physical simulator. Its rows may contain RGB, task text,
+quality labels, and progress labels, but generally not synchronized actions,
+joint states, object poses, or camera calibration. The ingestion stage records
+that limitation in metadata. MuJoCo must produce physical sidecars before a
+candidate is accepted for directional reward training.
+
+Stage 1: install the shared environment
+========================================
+
+Run from the repository root:
 
 .. code-block:: bash
 
    cd /home/ddt/MI-directional-WAM-reward-model-pretrain
+   bash requirements/install.sh --all
 
-Create the shared environment used by SAM3, Cosmos, MuJoCo, feature extraction,
-and scene/instance generalization data generation:
-
-.. code-block:: bash
-
-   bash requirements/install.sh --generalization-data
-
-Download the local model weights after Hugging Face authentication:
-
-.. code-block:: bash
-
-   hf auth login
-   bash requirements/install.sh --generalization-data --download-weights
-
-The shared environment stores source trees and weights at:
+The command is idempotent. It creates ``.venv`` and stores source trees at:
 
 .. code-block:: text
 
    .venv/src/sam3
    .venv/src/cosmos-predict2.5
    .venv/src/cosmos-transfer2.5
-   .venv/models/sam3
-   .venv/models/cosmos-predict2.5
-   .venv/models/cosmos-transfer2.5
-   .venv/models/dinov3-vitb16-pretrain-lvd1689m
-   .venv/models/lawam_lam
+   .venv/src/robometer
 
-Install the Robometer/RBM-EVAL source into the same ``.venv``. The installer
-uses ``--no-deps`` for Robometer itself so its Torch 2.8 dependency pins do not
-replace the existing Cosmos/SAM3 stack:
+The default pinned source commits are defined near the top of
+``requirements/install.sh``. Do not install these packages into a second
+environment for this pipeline. The legacy ``--mi-cosmos`` and ``--rlpd``
+targets are retained for compatibility but are not required by the shared
+workflow. PyTorch 2.7.0/torchvision 0.22.0 are installed from the CUDA 12.8
+index by default; set ``PYTORCH_INDEX_URL`` only when the host needs a
+different compatible wheel source.
+
+Authenticate to Hugging Face, then download all weights into ``.venv/models``:
 
 .. code-block:: bash
 
-   bash requirements/install.sh --reward-eval
-   bash requirements/install.sh --reward-eval --download-eval-data
+   source .venv/bin/activate
+   hf auth login
+   bash requirements/install.sh --generalization-data --download-weights
 
-The pinned source and processed data are stored at:
+The weight layout is:
 
 .. code-block:: text
 
-   .venv/src/robometer
-   .venv/datasets/robometer
+   .venv/models/sam3/sam3.pt
+   .venv/models/cosmos-predict2.5/robot/action-cond/*_ema_bf16.pt
+   .venv/models/cosmos-transfer2.5/general/depth/*_ema_bf16.pt
+   .venv/models/dinov3-vitb16-pretrain-lvd1689m/
+   .venv/models/lawam_lam/
 
-Activate the environment for all following local commands:
+Download and extract Robometer processed data when it is needed as a base
+source or benchmark:
+
+.. code-block:: bash
+
+   bash requirements/install.sh --reward-eval --download-eval-data
+
+The installer clones the pinned Robometer source below ``.venv/src/robometer``
+and extracts its processed caches below ``.venv/datasets/robometer``. The
+processed archive is large; select a smaller dataset in the YAML if storage is
+limited. The default repository configuration uses a policy-ranking dataset as
+an example, not as a claim that it matches every task.
+
+Set headless rendering variables in every shell that runs data preparation:
 
 .. code-block:: bash
 
@@ -93,141 +122,186 @@ Activate the environment for all following local commands:
    export MUJOCO_GL=egl
    export PYOPENGL_PLATFORM=egl
 
-The optional ``--mi-cosmos`` and ``--rlpd`` targets create isolated legacy
-environments. They are not required for the shared generalization/RBM-EVAL path.
+Verify the installation without loading a model:
 
-Stage 2: Prepare custom assets
-==============================
+.. code-block:: bash
 
-The repository does not ship task-specific object and scene assets. For a
-custom instance task, provide the following, or provide an external worker that
-generates the equivalent artifacts:
+   .venv/bin/python - <<'PY'
+   import mujoco, numpy, torch
+   print("mujoco", mujoco.__version__)
+   print("torch", torch.__version__, "cuda", torch.cuda.is_available())
+   PY
 
-+----------------------------+----------+-----------------------------------------+
-| Asset                      | Required | Accepted form                           |
-+============================+==========+=========================================+
-| Initial global-camera RGB  | Yes      | PNG/JPEG frames or video                |
-| Successful reference RGB  | Yes      | PNG/JPEG frames or video                |
-| Source object geometry     | Yes      | MuJoCo mesh or XML asset                |
-| Target object geometry     | Yes      | MuJoCo mesh or XML asset                |
-| Object materials           | Usually  | MTL, texture maps, MuJoCo materials     |
-| Scene assets               | Yes      | Franka, table, target, lighting, XML    |
-| Camera calibration         | Yes      | Resolution, intrinsics, extrinsics      |
-| Task/variant metadata      | Yes      | YAML task configuration                 |
-+----------------------------+----------+-----------------------------------------+
+SAM3 checkpoints are gated on Hugging Face access. If the checkpoint is not
+present, SAM3 fails explicitly instead of silently downloading to a global
+cache.
 
-A real-robot photograph is optional when MuJoCo can render the initial and
-successful reference views. If Cosmos is conditioned on a real image, provide
-that image and its camera calibration. Initial and successful views must use
-the same camera convention.
+Stage 2: prepare MuJoCo assets and materials
+============================================
 
-A recommended asset layout is:
+The repository does not ship a Franka scene or task meshes. For each task,
+provide a scene XML and target-instance XMLs. A minimum layout is:
 
 .. code-block:: text
 
    assets/custom_task/
    ├── scene/scene.xml
-   ├── scene/franka.xml
-   ├── scene/table.xml
-   ├── scene/basket.xml
-   ├── objects/source_object/object.obj
-   ├── objects/source_object/object.mtl
-   ├── objects/source_object/texture.png
-   ├── objects/target_object/object.obj
-   ├── objects/target_object/object.mtl
-   ├── objects/target_object/texture.png
-   ├── camera/intrinsics.json
-   ├── camera/extrinsics.json
-   ├── observations/initial/000000.png
-   ├── observations/success/000000.png
-   └── task.yaml
+   ├── scene/scene_banana.xml
+   ├── scene/scene_push_b.xml
+   ├── scene/scene_peg_square.xml
+   ├── meshes/franka/...
+   ├── meshes/table/...
+   ├── meshes/apple/...
+   ├── meshes/banana/...
+   ├── materials/*.mtl
+   ├── textures/*.png
+   └── camera/intrinsics.json
 
-The existing task templates cover ``pick_place``, ``push_shape`` and
-``peg_insertion`` under ``mi_reward/configs/tasks/``. The main configuration is
-``mi_reward/configs/generalization_reward.yaml``.
+The XML must expose the names referenced by the task YAML. The current
+templates use ``global_cam``, ``ee_target``, ``panda_hand``, ``task_object``,
+the task goal body, ``gripper``, and the listed geom names. Rename the XML
+fields or edit the YAML, but keep the names synchronized.
 
-Stage 3: Generate and verify future data
-=========================================
+Each held-out instance must have a real ``model_path`` in its task YAML. A
+``builtin://`` URI is stored for provenance only and is never interpreted as a
+mesh downloader. If a held-out model path is absent, the MuJoCo worker stops
+with an error instead of claiming instance generalization.
 
-Configure the following paths and task fields in
-``mi_reward/configs/generalization_reward.yaml``:
+The three templates are:
 
-* ``paths.candidate_records``
-* ``paths.manifest``
-* ``paths.success_refs``
-* ``paths.feasibility_config``
-* ``task_family`` and ``task_families``
-* ``data_preparation.sam3`` and ``data_preparation.cosmos``
-* ``execution.stages`` for the concrete SAM3, scene-transfer, MuJoCo, planner,
-  and Predict workers
+* ``mi_reward/configs/tasks/pick_place_apple_banana.yaml``;
+* ``mi_reward/configs/tasks/push_t_to_b.yaml``;
+* ``mi_reward/configs/tasks/peg_insertion_variants.yaml``.
 
-The normal worker order is:
+The templates deliberately point at placeholder XML paths. Replace them before
+a real run. The task YAML also controls hover height, insertion depth, gripper
+values, contact phases, and goal tolerances.
 
-.. code-block:: text
+Stage 3: Robometer base-data ingestion
+======================================
 
-   SAM3 -> MuJoCo (instance-level) -> planner -> Cosmos Predict -> Cosmos Transfer (scene-level)
+Edit ``mi_reward/configs/generalization_data.yaml``. Set
+``base_data.robometer.datasets`` to names that exist under
+``.venv/datasets/robometer``. ``task_rules`` maps free-form Robometer task text
+to one of the three physical task families and supplies SAM3 prompts. A rule
+must be specific enough to identify the task object and goal.
 
-Each external worker receives ``{python}``, ``{request}``, and ``{result}``
-placeholders and must write a result JSON containing the next ``records_path``.
-The last worker must write exactly ``paths.candidate_records``.
-
-The repository implements the scene worker in
-``mi_reward/data/cosmos_transfer_worker.py``. It calls the official
-``.venv/src/cosmos-transfer2.5/examples/inference.py`` entry point, converts
-frame/depth/mask sequences to control videos, uses SAM foreground masks as the
-white depth-control region so robot/task geometry remains constrained while the
-background follows the scene prompt, expands every base trajectory over
-``mi_reward/configs/scene_variants.yaml``, and writes ``scene_variant``
-provenance into the output JSONL.
-Video conversion uses the ``imageio-ffmpeg`` binary installed inside ``.venv``.
-All generated specs are submitted in one official batch so the 2B model is
-loaded once per worker run rather than once per trajectory variant.
-The ready-to-enable command passes the pinned local depth checkpoint under
-``.venv/models/cosmos-transfer2.5/general/depth`` so inference does not silently
-use a second checkpoint location.
-
-The default ``execution.stages`` contains an enabled Transfer entry. Therefore
-``generate_generalization_data.sh`` does not silently skip scene variation. Its
-input is the Predict worker's complete
-trajectory JSONL and its output is the final ``paths.candidate_records``.
-Transfer changes the rendered frames while preserving the same action,
-robot-state, object-state, relation, and physical-verification sidecars.
-The default upstream path is
-``dataset/mi_reward/generalization_rollouts/predict_records.jsonl``. Add the
-release-specific SAM3, MuJoCo, planner, and Predict worker entries before
-Transfer, or create this base-rollout JSONL in a preceding job. A missing file
-is a hard error in both dry-run and normal execution.
-Cosmos Transfer belongs only to this data-generation stage; it is never called
-by reward SFT.
-The official 2B Transfer model documents 65.4 GB for its single-GPU path; use an
-appropriate multi-GPU launch or a supported distilled control model when
-deploying this worker.
-
-Validate configuration and worker hand-offs first:
+Run the configuration check first:
 
 .. code-block:: bash
 
    bash mi_reward/scripts/generate_generalization_data.sh \
-     --config mi_reward/configs/generalization_reward.yaml \
-     --task-suite rigid_v1 \
-     --dry-run
+     --config mi_reward/configs/generalization_data.yaml --dry-run
 
-Run generation and deterministic verification:
+The dry-run does not require Robometer data or model weights. It checks the YAML
+and the complete worker hand-off. To perform ingestion and all later stages:
 
 .. code-block:: bash
 
    bash mi_reward/scripts/generate_generalization_data.sh \
-     --config mi_reward/configs/generalization_reward.yaml \
-     --task-suite rigid_v1
+     --config mi_reward/configs/generalization_data.yaml
 
-The accepted output must include:
+Robometer ingestion writes:
 
 .. code-block:: text
 
-   dataset/mi_reward/manifests/generalization_rigid_v1.jsonl
+   dataset/mi_reward/base/robometer_base_records.jsonl
    dataset/mi_reward/manifests/generalization_rigid_v1_success_refs.jsonl
+   dataset/mi_reward/base/robometer_base_records.report.json
 
-For every accepted candidate, strict training validation requires:
+Every base row contains ``base_id``, ``source: robometer``, task family,
+instruction, frame paths, initial/goal frames, a success-reference ID, the
+physical task YAML, and object prompts. It does not invent actions or robot
+states. Rows without a mapped successful reference are reported and skipped.
+
+The official processed cache stores ``frames`` as a path to a compressed
+``trajectory_*.npz`` file (with a ``frames`` array), not as a Python list of
+PNG files. The ingest worker reads that format directly and also accepts a
+video path, image-path list, NumPy frame array, or image/video bytes. It
+materializes normalized PNGs below
+``dataset/mi_reward/base/robometer_frames`` so all later workers consume the
+same file-based contract.
+
+Using RLinf data instead
+------------------------
+
+When the external RLinf collector is ready, set ``base_data.source: jsonl`` and
+set ``base_data.input_records`` to a JSONL that already follows the base-record
+contract. The required fields are:
+
+.. code-block:: json
+
+   {
+     "base_id": "rlinf/pick_place/episode_0001",
+     "source": "rlinf",
+     "task": "pick up the apple and place it in the basket",
+     "task_family": "pick_place",
+     "instruction": "pick up the apple and place it in the basket",
+     "frames": ["frames/000000.png", "frames/000001.png"],
+     "initial_frame": "frames/000000.png",
+     "goal_frame": "frames/000001.png",
+     "goal_ref_id": "rlinf/pick_place/success_0001",
+     "physical_task_config": "mi_reward/configs/tasks/pick_place_apple_banana.yaml",
+     "object_prompts": {"task_object": "apple", "goal": "basket", "robot": "robot arm"},
+     "action_path": "actions.npy",
+     "robot_state_path": "robot_states.jsonl"
+   }
+
+The success-reference JSONL named by ``paths.success_refs`` must contain the
+declared ``goal_ref_id`` and its frame sequence. This bridge lets RLinf remain
+the owner of real-world capture without adding a second collector here. For an
+external JSONL, use absolute paths or paths relative to the repository root
+for frames, sidecars, and the physical task YAML; the launcher runs from that
+root.
+
+Stage 4: physical and visual data generation
+==============================================
+
+The data launcher executes these workers in this exact order:
+
+.. code-block:: text
+
+   SAM3 -> planner -> MuJoCo -> Cosmos Predict -> Cosmos Transfer
+
+SAM3 reads base frames and text prompts, then writes per-object and composite
+masks. The planner reads the task XML and emits auditable phases such as
+``approach``, ``grasp``, ``lift``, ``transport``, ``place``, ``push``, ``align``,
+and ``insert``. MuJoCo executes that plan headlessly and writes synchronized:
+
+* rendered RGB frames;
+* ``actions.npy``;
+* robot-state JSONL;
+* object-state JSONL;
+* measured relation JSONL;
+* per-frame masks and depth maps;
+* simulation provenance.
+
+Cosmos Predict2.5 uses the MuJoCo action sequence as its conditioning signal.
+Its RGB output is a visual rollout, not a replacement action log. The worker
+keeps the MuJoCo action/state/relation sidecars attached to every generated
+candidate. Cosmos Transfer2.5 then varies scene appearance using synchronized
+depth and foreground controls while preserving those physical sidecars. The
+original SAM3 controls remain attached as provenance; MuJoCo re-renders the
+foreground mask at the simulated camera resolution used by Transfer.
+
+The output JSONL is:
+
+.. code-block:: text
+
+   dataset/mi_reward/generalization_rollouts/rigid_v1_records.jsonl
+
+The default Predict worker uses the official 2B robot/action-conditioned
+checkpoint and the default 256x320 action-conditioned experiment. Set the
+experiment, resolution, chunk size, and GPU counts in the command entries of
+``generalization_data.yaml`` if a different official checkpoint is installed.
+Cosmos Transfer's full 2B depth model is a multi-GPU workload; a single 4090
+can be used for dry-runs and smaller supported checkpoints, but the configured
+``--num-gpus`` must match the machine.
+
+Artifact gates
+--------------
+
+Before reward training, every accepted candidate must have:
 
 .. code-block:: text
 
@@ -239,166 +313,112 @@ For every accepted candidate, strict training validation requires:
    goal_ref_id
    control_artifacts.mask_root
    control_artifacts.depth_root
+   instance_variant
+   simulation
 
-SAM3 masks, MuJoCo depth maps, actions, robot/object states, measured
-relations, provenance, and verification records are normally generated by the
-workers. If ``paths.candidate_records`` points to pre-generated JSONL, all of
-these files must already exist.
+The verifier rejects missing files, frame-count mismatches, discontinuous
+object poses, invalid contact/collision flags, and unsatisfied terminal goals.
+Rejected rows remain auditable in the manifest but cannot reach reward SFT.
 
-Stage 4: Train reward models
-============================
+Stage 5: directional reward SFT
+================================
 
-Generalization reward branch
-----------------------------
-
-Use this branch for generalization-aware, physically verified supervision:
+After data generation succeeds, train with the separate reward configuration:
 
 .. code-block:: bash
 
    bash mi_reward/scripts/run_generalization_reward.sh \
      --config mi_reward/configs/generalization_reward.yaml
 
-This runs manifest validation, LAM token extraction, monotonic MI trajectory
-alignment, relation-aware directional preference construction, and reward SFT.
-The directional weights and loss weights are configured under ``training`` in
-``generalization_reward.yaml``. The usual checkpoint is:
+This performs, in order:
+
+1. strict accepted-candidate validation;
+2. LaWAM LAM token extraction and local feature caching;
+3. monotonic alignment to the successful reference;
+4. MI directional-progress preference construction;
+5. ranking, potential, and directional-difference reward SFT.
+
+The normal checkpoint is:
 
 .. code-block:: text
 
    results/mi_reward/generalization_rigid_v1/pytorch_model.pt
 
-The generalization reward consumes visual tokens, successful goal tokens, and measured
-relations. Its relation sidecars must be retained for later inference. The
-directional teacher aligns each candidate to the complete successful reference
-trajectory and adds measured relation progress; the student is trained with ranking, potential
-distillation, and directional-difference losses. No Cosmos model is called in
-this stage.
+``training.mi_backend`` controls the reward-training teacher backend. The
+preference builder has its own ``training.preference_mi_mode`` because its
+legacy CLI accepts ``gaussian_mi_proxy`` or ``histogram_mi``; these are not the
+same string as the ``dame_bspline`` training backend.
 
-StatePotential branch
----------------------
+Stage 6: RBM-EVAL
+=================
 
-Use this branch for RGB/feature-only RBM-EVAL and standard RLinf deployment.
-First extract pooled features and build preferences using the commands in the
-``Quick Start`` section. Then run:
+RBM-EVAL is a separate benchmark launcher and YAML. Set the checkpoint and
+feature extractor in ``eval/configs/rbm_eval.yaml`` and run:
 
 .. code-block:: bash
 
-   source .venv/bin/activate
-   python -m mi_reward.training.train_reward_sft \
-     --mode distill \
-     --preferences dataset/mi_reward/preferences/train_preferences.jsonl \
-     --feature_root dataset/mi_reward/features \
-     --output_dir results/mi_reward/state_potential \
-     --batch_size 16 \
-     --epochs 5 \
-     --lr 1e-4
-
-The checkpoint is:
-
-.. code-block:: text
-
-   results/mi_reward/state_potential/pytorch_model.pt
-
-The DINOv3 or LAM feature extractor used here must be the same representation
-used by the reward model during training.
-
-Stage 5: Run RBM-EVAL
-=====================
-
-RBM-EVAL uses official Robometer samplers and metric compilers for:
-
-* reward alignment;
-* policy ranking;
-* quality preference.
-
-Edit ``eval/configs/rbm_eval.yaml``:
-
-.. code-block:: yaml
-
-   paths:
-     checkpoint: results/mi_reward/state_potential/pytorch_model.pt
-
-   model:
-     type: auto
-     device: cuda
-     precision: fp32
-
-   features:
-     extractor: dino_v3
-     model_path: .venv/models/dinov3-vitb16-pretrain-lvd1689m
-     strict: true
-
-The extractor must match training. Use ``lawam_lam`` and fill the LAM paths if
-the checkpoint was trained on LAM features.
-
-Run the benchmark:
-
-.. code-block:: bash
-
-   export ROBOMETER_PROCESSED_DATASETS_PATH="$PWD/.venv/datasets/robometer"
    bash eval/run_rbm_eval.sh --config eval/configs/rbm_eval.yaml
 
-Outputs are written to:
+The adapter calls the pinned Robometer samplers and metric compilers for
+reward alignment, policy ranking, and quality preference. An RGB/feature-only
+``StatePotentialRewardModel`` checkpoint is the direct compatibility path. A
+relation-conditioned GeoProgress checkpoint additionally needs its relation
+sidecar configured under ``geoprogress.relation_sidecar``.
 
-.. code-block:: text
+Stage 7: RLinf deployment
+==========================
 
-   results/rbm_eval/mi_reward/metrics.json
-   results/rbm_eval/mi_reward/<eval_type>/*_results.json
+The final Franka/RLPD integration remains in the RLinf checkout. This repository
+contains the reward adapter and potential-shaping state, but it does not vendor
+RLinf or perform hardware collection. Follow
+``docs/rlinf_integration/franka_mi_potential_rlpd.rst`` for registry wiring,
+checkpoint metadata, dummy mode, and the first hardware run.
 
-The standard RBM-1M data is RGB/video data and does not contain MuJoCo
-relations. Therefore a GeoProgress checkpoint cannot be used on RBM-EVAL
-unless ``geoprogress.relation_sidecar`` contains measured relations and an
-explicit successful goal for every sampled trajectory. Do not substitute zero
-relations or an arbitrary final frame.
+The learned MI reward is a shaping signal. It must not replace environment
+termination, collision checks, force limits, workspace limits, or emergency
+stops. Keep the sparse environment reward active during deployment.
 
-Stage 6: Deploy with Franka RLPD
-================================
+Troubleshooting
+===============
 
-The current repository provides drop-in RLinf modules, but it does not vendor
-the RLinf repository or modify its registry in place. Real deployment requires
-the following manual steps:
+``Missing .venv/bin/python``
+    Run ``bash requirements/install.sh --all`` and activate ``.venv``.
 
-1. Use a ``StatePotentialRewardModel`` checkpoint, not a plain GeoProgress
-   checkpoint, unless RLinf observations include the required relation and goal
-   inputs.
-2. Create ``metadata.json`` beside ``pytorch_model.pt``. The template and
-   checkpoint export procedure are in
-   ``docs/rlinf_integration/franka_mi_potential_rlpd.rst``.
-3. Copy ``MIPotentialRewardModel`` into the RLinf reward-worker package.
-4. Register ``model_type: mi_potential`` in the RLinf reward registry.
-5. Add ``PotentialShapingState`` to the EnvWorker and configure image keys,
-   encoder paths, and task description.
-6. Copy or adapt
-   ``docs/rlinf_integration/config/realworld_peginsertion_rlpd_cnn_async_mi_potential.yaml``.
-7. Run RLinf dummy mode and verify model loading, potential deltas, replay
-   fields, and SAC losses before connecting hardware.
-8. Validate on simulation or LIBERO before a Franka run.
-9. Start the first hardware run with ``reward_weight: 0.0``. Only increase the
-   shaping weight after the sparse environment reward, camera stream, safety
-   limits, and emergency stop have been verified.
+``SAM3 checkpoint not found``
+    Authenticate to Hugging Face and rerun the generalization-data installer
+    with ``--download-weights``.
 
-The detailed Franka launch commands, cache lifecycle, ablations, metrics, and
-safety rules are in ``franka_mi_potential_rlpd.rst``. MI shaping must never
-control termination, success detection, collision handling, force limits,
-workspace limits, or emergency stops.
+``Robometer processed dataset is missing``
+    Download/extract the selected dataset with
+    ``--reward-eval --download-eval-data`` and check its directory name.
 
-Artifact gates
-==============
+``Held-out instance replacement requires instance_variant.model_path``
+    Add the target MuJoCo XML path to the corresponding task YAML. A
+    ``builtin://`` URI alone is intentionally insufficient.
 
-Do not start a stage until the preceding artifact exists:
+``MuJoCo body/geom does not exist``
+    Rename the XML entities or update the task YAML; do not disable the check.
 
-.. code-block:: text
+``Cosmos output was not created``
+    Verify the pinned Cosmos source, local checkpoint path, GPU count, CUDA
+    visibility, and the action-conditioned experiment name.
 
-   Stage 1: .venv/bin/python
-   Stage 2: assets + task YAML + initial/success RGB
-   Stage 3: manifest + success_refs + accepted candidates > 0
-   Stage 4: pytorch_model.pt + train_config.yaml
-   Stage 5: metrics.json
-   Stage 6: RLinf dummy-mode validation, then hardware review
+``Refusing generalization reward training``
+    Inspect the run report and rejected rows. The training gate is designed to
+    prevent visual-only Cosmos videos or incomplete Robometer rows from being
+    used as physical directional supervision.
 
-The SAM3, MuJoCo, planner, and Predict workers are deployment-specific external
-commands. The repository implements their hand-off contract and the official
-Cosmos Transfer worker, but does not claim that those upstream workers are
-automatically installed or that the full six-stage process is one-command
-automatic on every machine. The final RLinf registry/hardware integration also
-remains deployment-specific.
+Static checks
+=============
+
+The following checks do not require a GPU or downloaded weights:
+
+.. code-block:: bash
+
+   python3 -m compileall -q mi_reward
+   bash -n requirements/install.sh \
+     mi_reward/scripts/generate_generalization_data.sh \
+     mi_reward/scripts/run_generalization_reward.sh
+   .venv/bin/python -m mi_reward.data.generalization_pipeline \
+     --config mi_reward/configs/generalization_data.yaml \
+     --task-suite rigid_v1 --dry-run
