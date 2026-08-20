@@ -232,17 +232,17 @@ mi_reward/                 MI-directional reward pretraining extension
 └── scripts/               Shell wrappers for the full pipeline
 eval/                      Independent RBM-EVAL launcher and YAML configuration
 tests/                     Smoke tests (full pipeline + MI backends + ablation)
-requirements/              Automated env setup (--instance-data, --reward-eval, --mi-cosmos, --rlpd)
+requirements/              Automated env setup (--generalization-data, --reward-eval, --mi-cosmos, --rlpd)
 train_lawam.sh             Single-node LaWAM training entrypoint
 train_lawam_distributed.sh Multi-node LaWAM training entrypoint
 ```
 
 ## Installation
 
-### Instance Data Environment
+### Generalization Data Environment
 
 The shared `.venv` contains SAM3, Cosmos, MuJoCo, feature extraction, and the
-instance-data tools. Installation, local weights, headless rendering, and
+scene/instance-generalization tools. Installation, local weights, headless rendering, and
 worker configuration are documented in
 [`docs/mi_reward_end_to_end.rst`](docs/mi_reward_end_to_end.rst).
 
@@ -529,13 +529,19 @@ python -m mi_reward.evaluation.eval_progress_corr \
   --output results/mi_reward/libero_progress_report.json
 ```
 
-### Instance-Aware Rigid V1
+### Generalization Rigid V1
 
-The instance-aware path supports `pick_place`, `push_shape`, and
-`peg_insertion`. Prepare assets and run the data, SFT, benchmark, and deployment
-stages according to [`docs/mi_reward_end_to_end.rst`](docs/mi_reward_end_to_end.rst).
-The primary entry points are `prepare_instance_data.sh`,
-`run_instance_geoprogress.sh`, and `eval/run_rbm_eval.sh`.
+The generalization path supports `pick_place`, `push_shape`, and
+`peg_insertion`, with independent scene-level and object-instance variation.
+Prepare assets and run the data, reward SFT, benchmark, and deployment stages
+according to [`docs/mi_reward_end_to_end.rst`](docs/mi_reward_end_to_end.rst).
+The primary entry points are `generate_generalization_data.sh`,
+`run_generalization_reward.sh`, and `eval/run_rbm_eval.sh`.
+
+Scene-level augmentation is implemented in
+`mi_reward/data/cosmos_transfer_worker.py` and is used only by the data stage.
+Monotonic MI directional scoring and directional-potential distillation are
+used only by `run_generalization_reward.sh` during reward SFT.
 
 ## End-to-End Workflow
 

@@ -76,6 +76,9 @@ class SceneVariantDescriptor:
     segmentation_path: str | None = None
     depth_path: str | None = None
     preserve_mask_path: str | None = None
+    model_id: str | None = None
+    seed: int | None = None
+    source_video_path: str | None = None
 
     @classmethod
     def from_dict(cls, item: dict[str, Any]) -> "SceneVariantDescriptor":
@@ -85,6 +88,9 @@ class SceneVariantDescriptor:
             segmentation_path=(None if item.get("segmentation_path") is None else str(item["segmentation_path"])),
             depth_path=(None if item.get("depth_path") is None else str(item["depth_path"])),
             preserve_mask_path=(None if item.get("preserve_mask_path") is None else str(item["preserve_mask_path"])),
+            model_id=(None if item.get("model_id") is None else str(item["model_id"])),
+            seed=(None if item.get("seed") is None else int(item["seed"])),
+            source_video_path=(None if item.get("source_video_path") is None else str(item["source_video_path"])),
         )
 
 

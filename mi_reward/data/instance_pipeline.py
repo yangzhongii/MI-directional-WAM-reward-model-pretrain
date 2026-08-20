@@ -1,4 +1,4 @@
-"""Configuration-driven ingestion entry point for instance rollout workers.
+"""Configuration-driven ingestion entry point for generalization rollout workers.
 
 SAM3, simulator, Transfer, and Predict workers are intentionally external. They
 write candidate records under the configured run directory; this module validates
@@ -20,7 +20,7 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     try:
         import yaml
     except ImportError as exc:
-        raise RuntimeError("PyYAML is required for instance pipeline configuration.") from exc
+        raise RuntimeError("PyYAML is required for generalization pipeline configuration.") from exc
     payload = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"Configuration root must be a mapping: {path}")
@@ -61,7 +61,7 @@ def validate_config(config: dict[str, Any]) -> dict[str, str]:
 
 
 def validate_training_manifest(path: str | Path, success_refs: str | Path | None = None) -> dict[str, object]:
-    """Refuse reward training if an accepted instance candidate is incomplete."""
+    """Refuse reward training if accepted generalization data is incomplete."""
 
     manifest = Path(path)
     references = None
@@ -90,14 +90,17 @@ def validate_training_manifest(path: str | Path, success_refs: str | Path | None
             missing.append("frames")
         if item.control_artifacts is None:
             missing.append("control_artifacts")
-        elif not item.control_artifacts.mask_root or not Path(item.control_artifacts.mask_root).is_dir():
-            missing.append("mask_root")
-        elif not item.control_artifacts.depth_root or not Path(item.control_artifacts.depth_root).is_dir():
-            missing.append("depth_root")
+        else:
+            if not item.control_artifacts.mask_root or not Path(item.control_artifacts.mask_root).is_dir():
+                missing.append("mask_root")
+            if not item.control_artifacts.depth_root or not Path(item.control_artifacts.depth_root).is_dir():
+                missing.append("depth_root")
         if missing:
             failures.append(f"{item.traj_id}: {', '.join(missing)}")
     if failures:
-        raise ValueError("Refusing instance reward training; accepted candidates are incomplete: " + "; ".join(failures))
+        raise ValueError("Refusing generalization reward training; accepted candidates are incomplete: " + "; ".join(failures))
+    if accepted == 0:
+        raise ValueError("Refusing generalization reward training; the manifest has no accepted candidates.")
     return {
         "manifest": str(manifest),
         "success_refs": (None if success_refs is None else str(success_refs)),
@@ -113,7 +116,7 @@ def _write_run_report(path: str | Path, payload: dict[str, object]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Validate and ingest instance-aware rollout workers.")
+    parser = argparse.ArgumentParser(description="Validate and ingest scene/instance generalization rollout workers.")
     parser.add_argument("--config", required=True)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--task-suite", default=None, help="Require the configured task suite before executing workers.")

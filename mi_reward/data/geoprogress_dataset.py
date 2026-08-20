@@ -100,7 +100,8 @@ class GeoProgressPreferenceDataset(Dataset[dict[str, object]]):
         goal_ref_id = self._goal_ref_id(pair, chosen_example, rejected_example)
         chosen = self._load_tokens(chosen_example.traj_id)
         rejected = self._load_tokens(rejected_example.traj_id)
-        goal = self._load_tokens(goal_ref_id)[-1]
+        goal_trajectory = self._load_tokens(goal_ref_id)
+        goal = goal_trajectory[-1]
         chosen_rel = self._load_relations(chosen_example, chosen.shape[0])
         rejected_rel = self._load_relations(rejected_example, rejected.shape[0])
         if chosen_rel.names != rejected_rel.names:
@@ -111,6 +112,7 @@ class GeoProgressPreferenceDataset(Dataset[dict[str, object]]):
             "chosen_tokens": chosen,
             "rejected_tokens": rejected,
             "goal_tokens": goal,
+            "goal_trajectory_tokens": goal_trajectory,
             "chosen_relations": chosen_rel.values,
             "rejected_relations": rejected_rel.values,
             "relation_names": chosen_rel.names,

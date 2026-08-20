@@ -1,4 +1,4 @@
-"""Run the configured external stages for an instance-aware data run.
+"""Run the configured external stages for a generalization data run.
 
 SAM3, Cosmos, and simulator environments evolve independently and can require
 different CUDA environments.  This module therefore owns their order and
@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 
-PIPELINE_ORDER = ("sam3", "transfer", "simulator", "planner", "predict")
+PIPELINE_ORDER = ("sam3", "simulator", "planner", "predict", "transfer")
 
 
 @dataclass(frozen=True)

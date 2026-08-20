@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 
 from mi_reward.data.cosmos_action_cond import ingest_action_conditioned_candidates
-from mi_reward.data.schema import PreferencePair, SuccessReference, write_jsonl
+from mi_reward.data.schema import PreferencePair, SuccessReference, TrajectoryExample, write_jsonl
 from mi_reward.features.cached_feature_store import CachedFeatureStore
 from mi_reward.relations.geometry import RobotState, TaskGeometry, build_relation_descriptor
 from mi_reward.relations.sequence import load_relation_sequence, relation_progress_potential
@@ -77,6 +77,48 @@ def test_geometry_descriptor_and_goal_conditioned_model() -> None:
         state[:, 0], state[:, 1], goal, relations[:, 0], relations[:, 1]
     )
     assert reward.shape == (2,)
+
+
+def test_directional_scoring_uses_all_success_references_for_confidence() -> None:
+    from mi_reward.scoring.build_preferences import score_manifest
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        manifest = root / "manifest.jsonl"
+        references = root / "success_refs.jsonl"
+        feature_root = root / "features"
+        write_jsonl(manifest, [TrajectoryExample(
+            traj_id="candidate",
+            task="task",
+            frames=[],
+            source="real",
+            split="train",
+        )])
+        write_jsonl(references, [
+            SuccessReference(ref_id="success/a", task="task", frames=[]),
+            SuccessReference(ref_id="success/b", task="task", frames=[]),
+        ])
+        store = CachedFeatureStore(feature_root)
+        torch.manual_seed(11)
+        candidate = torch.randn(3, 4, 8)
+        reference = torch.randn(3, 4, 8)
+        store.save("candidate_tokens", candidate)
+        store.save("success/a_tokens", reference)
+        store.save("success/b_tokens", reference.clone())
+
+        scored = score_manifest(
+            manifest,
+            references,
+            feature_root,
+            gamma=0.99,
+            mi_mode="gaussian_mi_proxy",
+            use_token_features=True,
+            directional_alignment=True,
+        )
+
+        assert len(scored) == 1
+        assert scored[0]["goal_ref_id"] in {"success/a", "success/b"}
+        assert abs(float(scored[0]["confidence"]) - 0.5) < 1e-6
 
 
 def test_geoprogress_cpu_end_to_end_smoke() -> None:
@@ -156,4 +198,5 @@ def test_geoprogress_cpu_end_to_end_smoke() -> None:
             seed=0,
         )
         assert config["model_class"] == "GeoProgressPotential"
+        assert config["teacher_alignment"] == "monotonic_viterbi"
         assert (output_dir / "pytorch_model.pt").is_file()

@@ -2,13 +2,13 @@
 # LaWAM + MI Reward Extension — automated environment setup with uv.
 #
 # Usage:
-#   bash requirements/install.sh --instance-data  # .venv: SAM3/Cosmos/MuJoCo data preparation
+#   bash requirements/install.sh --generalization-data  # .venv: SAM3/Cosmos/MuJoCo data generation
 #   bash requirements/install.sh --reward-eval    # .venv: Robometer/RBM-EVAL adapter
 #   bash requirements/install.sh --mi-cosmos      # Training env: cosmos + DINO + MI reward (8×A800)
 #   bash requirements/install.sh --rlpd           # Inference env: DINOv3 + RewardHead + Ray (NUC + 4090)
 #   bash requirements/install.sh --help
 #
-# The instance-data environment is the shared `.venv` for Stage 1 and Stage 2.
+# The generalization-data environment is the shared `.venv` for Stage 1 and Stage 2.
 # `.venv-mi` and `.venv-rlpd` remain legacy isolated environments.
 set -euo pipefail
 
@@ -26,6 +26,7 @@ USE_MIRRORS=0
 INSTALL_FLASH_ATTN=1
 INSTALL_PROJECT=1
 COSMOS_GIT_REF="${COSMOS_GIT_REF:-a2c298b0a3df3778b973fe65e9e58877b292d8a7}"
+COSMOS_TRANSFER_GIT_REF="${COSMOS_TRANSFER_GIT_REF:-2ff49d0717af02057ae79bc75c00fbff9da1b4e7}"
 SAM3_REPO_URL="${SAM3_REPO_URL:-https://github.com/facebookresearch/sam3.git}"
 SAM3_GIT_REF="${SAM3_GIT_REF:-}"
 SAM3_MODEL_ID="${SAM3_MODEL_ID:-facebook/sam3}"
@@ -71,7 +72,7 @@ print_help() {
 Usage: bash requirements/install.sh <target> [options]
 
 Targets (mutually exclusive):
-    --instance-data        Data-preparation environment with SAM3, Cosmos, and MuJoCo.
+    --generalization-data  Data-generation environment with SAM3, Cosmos, and MuJoCo.
                            Creates .venv and stores source/checkpoints under .venv/.
     --reward-eval          RBM-EVAL environment in the shared .venv.
                            Clones the pinned Robometer source under .venv/src/.
@@ -84,8 +85,9 @@ Options:
     --use-mirrors          Use mirrors (aliyun/hf-mirror/ghfast) for faster downloads.
     --no-flash-attn        Skip flash-attn (--mi-cosmos only).
     --no-install-project   Skip editable install of the project itself.
-    --cosmos-ref <ref>     Cosmos-Predict2.5 git ref (--mi-cosmos only, default: pinned).
-    --sam3-repo <url>      SAM3 git URL (--instance-data only).
+    --cosmos-ref <ref>     Cosmos-Predict2.5 git ref (--generalization-data/--mi-cosmos, default: pinned).
+    --transfer-ref <ref>   Cosmos-Transfer2.5 git ref (--generalization-data only, default: pinned).
+    --sam3-repo <url>      SAM3 git URL (--generalization-data only).
     --download-weights     Download SAM3, Cosmos Predict/Transfer, DINOv3, and LAM weights.
                            Requires Hugging Face access and uses *_MODEL_ID overrides.
     --download-eval-data   Download Robometer processed evaluation datasets into .venv/datasets/robometer.
@@ -109,6 +111,7 @@ while [[ $# -gt 0 ]]; do
         --no-flash-attn)    INSTALL_FLASH_ATTN=0; shift ;;
         --no-install-project) INSTALL_PROJECT=0; shift ;;
         --cosmos-ref)       COSMOS_GIT_REF="${2:-}"; shift 2 ;;
+        --transfer-ref)     COSMOS_TRANSFER_GIT_REF="${2:-}"; shift 2 ;;
         --sam3-repo)        SAM3_REPO_URL="${2:-}"; shift 2 ;;
         --download-weights) DOWNLOAD_WEIGHTS=1; shift ;;
         --download-eval-data) DOWNLOAD_EVAL_DATA=1; shift ;;
@@ -117,7 +120,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$TARGET" in
-    --instance-data)
+    --generalization-data)
         VENV_DIR="${VENV_DIR:-.venv}"
         PYTHON_VERSION="${PYTHON_VERSION:-3.10}"
         ;;
@@ -138,7 +141,7 @@ case "$TARGET" in
         exit 1
         ;;
     *)
-        echo "Unknown target: $TARGET (use --instance-data, --reward-eval, --mi-cosmos, or --rlpd)" >&2
+        echo "Unknown target: $TARGET (use --generalization-data, --reward-eval, --mi-cosmos, or --rlpd)" >&2
         exit 1
         ;;
 esac
@@ -161,10 +164,11 @@ echo "[install] uv version: $(uv --version)"
 echo "[install] Target: $TARGET  |  venv: $VENV_DIR  |  python: $PYTHON_VERSION"
 
 # ==================================================================
-# Instance data environment: --instance-data
+# Generalization data environment: --generalization-data
 # ==================================================================
-if [ "$TARGET" = "--instance-data" ]; then
+if [ "$TARGET" = "--generalization-data" ]; then
     COSMOS_DIR="$VENV_DIR/src/cosmos-predict2.5"
+    TRANSFER_DIR="$VENV_DIR/src/cosmos-transfer2.5"
     SAM3_DIR="$VENV_DIR/src/sam3"
     MODEL_DIR="$VENV_DIR/models"
 
@@ -181,6 +185,11 @@ if [ "$TARGET" = "--instance-data" ]; then
         git clone https://github.com/nvidia-cosmos/cosmos-predict2.5.git "$COSMOS_DIR"
         git -C "$COSMOS_DIR" checkout "$COSMOS_GIT_REF"
     fi
+    if [ ! -d "$TRANSFER_DIR/.git" ]; then
+        echo "[install] Cloning Cosmos-Transfer2.5 into $TRANSFER_DIR..."
+        git clone https://github.com/nvidia-cosmos/cosmos-transfer2.5.git "$TRANSFER_DIR"
+        git -C "$TRANSFER_DIR" checkout "$COSMOS_TRANSFER_GIT_REF"
+    fi
     if [ ! -d "$SAM3_DIR/.git" ]; then
         echo "[install] Cloning SAM3 into $SAM3_DIR..."
         git clone "$SAM3_REPO_URL" "$SAM3_DIR"
@@ -189,18 +198,19 @@ if [ "$TARGET" = "--instance-data" ]; then
         git -C "$SAM3_DIR" checkout "$SAM3_GIT_REF"
     fi
 
-    echo "[install] Installing the instance-data Python environment..."
+    echo "[install] Installing the generalization-data Python environment..."
     uv pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0
     uv pip install \
         mujoco==3.3.2 \
         transformers==5.2.0 \
         numpy scipy pillow opencv-python-headless \
         pyyaml omegaconf einops tqdm rich pytest \
-        accelerate safetensors imageio matplotlib pandas \
+        accelerate safetensors imageio imageio-ffmpeg matplotlib pandas \
         huggingface_hub[cli] datasets
     uv pip install -e "$SAM3_DIR"
     uv pip install -e "$COSMOS_DIR"
     uv pip install -e "$COSMOS_DIR/packages/cosmos-oss[cu128_torch27]"
+    uv pip install -e "$TRANSFER_DIR[cu128]"
     if [ "$INSTALL_PROJECT" -eq 1 ]; then
         uv pip install -e "$REPO_ROOT" --no-deps
     fi

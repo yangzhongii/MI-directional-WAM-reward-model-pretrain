@@ -9,6 +9,8 @@ from typing import Any
 from mi_reward.data.schema import PreferencePair, SuccessReference, TrajectoryExample, read_jsonl, write_jsonl
 from mi_reward.features.cached_feature_store import CachedFeatureStore
 from mi_reward.relations.sequence import load_relation_sequence, relation_progress_potential
+from mi_reward.scoring.dame_soft_histogram import DameSoftHistogramMI
+from mi_reward.scoring.directional_potential import DirectionalScoreConfig, score_candidate_trajectory
 from mi_reward.scoring.trajectory_score import score_trajectory
 
 
@@ -42,7 +44,13 @@ def score_manifest(
     mi_mode: str,
     relation_weight: float = 0.0,
     use_token_features: bool = False,
+    directional_alignment: bool = False,
+    directional_config: DirectionalScoreConfig | None = None,
 ) -> list[dict[str, object]]:
+    if directional_alignment and not use_token_features:
+        raise ValueError("Directional alignment requires native token features; pass --token_features.")
+    directional_estimator = DameSoftHistogramMI(num_bins=8) if directional_alignment else None
+    directional_config = directional_config or DirectionalScoreConfig(gamma=gamma)
     store = CachedFeatureStore(feature_root)
     trajectories = read_jsonl(manifest, TrajectoryExample)
     refs_by_task = _group_by_task(read_jsonl(success_refs, SuccessReference))
@@ -61,19 +69,48 @@ def score_manifest(
             continue
         feature_id = traj.traj_id + "_tokens" if use_token_features else traj.traj_id
         candidate_features = store.load(feature_id)
-        scored_refs = [
-            (
-                ref,
-                score_trajectory(
-                    candidate_features,
-                    store.load(ref.ref_id + "_tokens" if use_token_features else ref.ref_id),
-                    gamma=gamma,
-                    mi_mode=mi_mode,
-                ),
-            )
+        reference_features = {
+            ref.ref_id: store.load(ref.ref_id + "_tokens" if use_token_features else ref.ref_id)
             for ref in refs
-        ]
-        best_ref, best = max(scored_refs, key=lambda item: float(item[1]["score_delta"]))
+        }
+        if directional_alignment:
+            assert directional_estimator is not None
+            if candidate_features.ndim != 3 or any(item.ndim != 3 for item in reference_features.values()):
+                raise ValueError("Directional alignment requires [T, K, D] candidate and reference tokens.")
+            result = score_candidate_trajectory(
+                candidate_features,
+                reference_features,
+                directional_estimator,
+                directional_config,
+            )
+            if result.selected_reference_id is None:
+                raise ValueError(f"Directional scoring did not select a success reference for {traj.traj_id}.")
+            best_ref = next(ref for ref in refs if ref.ref_id == result.selected_reference_id)
+            best = {
+                "phi": [float(value) for value in result.phi.detach().cpu().tolist()],
+                "score_delta": result.directional_score,
+                "score_mean": result.mean_alignment,
+                "directional_score": result.directional_score,
+                "endpoint_progress": result.endpoint_progress,
+                "positive_gain": result.positive_gain,
+                "regression_penalty": result.regression_penalty,
+                "stage_progress": result.stage_progress,
+                "confidence": result.confidence,
+            }
+        else:
+            scored_refs = [
+                (
+                    ref,
+                    score_trajectory(
+                        candidate_features,
+                        reference_features[ref.ref_id],
+                        gamma=gamma,
+                        mi_mode=mi_mode,
+                    ),
+                )
+                for ref in refs
+            ]
+            best_ref, best = max(scored_refs, key=lambda item: float(item[1]["score_delta"]))
         relation_score = 0.0
         relation_phi: list[float] | None = None
         if relation_weight:
@@ -99,7 +136,7 @@ def score_manifest(
                 "phi": best["phi"],
                 "relation_phi": relation_phi,
                 "relation_score": relation_score,
-                "confidence": 1.0 if not _requires_verification(traj) else 1.0,
+                "confidence": float(best.get("confidence", 1.0)),
             }
         )
     return scored
@@ -253,11 +290,30 @@ def main() -> None:
     parser.add_argument("--mi_mode", default="gaussian_mi_proxy", choices=["gaussian_mi_proxy", "histogram_mi"])
     parser.add_argument("--relation_weight", type=float, default=0.0)
     parser.add_argument("--token_features", action="store_true", help="Score native [T, K, D] LaWAM visual tokens.")
+    parser.add_argument(
+        "--directional-alignment",
+        action="store_true",
+        help="Use monotonic MI alignment and directional progress components for preference scores.",
+    )
+    parser.add_argument("--directional_w_endpoint", type=float, default=1.0)
+    parser.add_argument("--directional_w_positive", type=float, default=0.5)
+    parser.add_argument("--directional_w_regression", type=float, default=1.0)
+    parser.add_argument("--directional_w_stage", type=float, default=1.0)
+    parser.add_argument("--directional_w_alignment", type=float, default=0.1)
     args = parser.parse_args()
 
     scored = score_manifest(
         args.manifest, args.success_refs, args.feature_root, args.gamma, args.mi_mode,
         relation_weight=args.relation_weight, use_token_features=args.token_features,
+        directional_alignment=args.directional_alignment,
+        directional_config=DirectionalScoreConfig(
+            gamma=args.gamma,
+            w_endpoint=args.directional_w_endpoint,
+            w_positive=args.directional_w_positive,
+            w_regression=args.directional_w_regression,
+            w_stage=args.directional_w_stage,
+            w_alignment=args.directional_w_alignment,
+        ),
     )
 
     if args.pair_mode == "adjacent":

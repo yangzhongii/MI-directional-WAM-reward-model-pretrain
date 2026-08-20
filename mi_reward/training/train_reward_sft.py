@@ -261,10 +261,11 @@ def train_geoprogress(
 ) -> dict[str, object]:
     """Train the verified, goal-conditioned GeoProgress reward potential.
 
-    The goal comes only from a declared successful reference.  Candidate RGB
-    is encoded by LaWAM before this function is called; measured relations
-    enter separately and unverified Cosmos candidates are rejected by the
-    dataset contract.
+    The goal comes only from a declared successful reference. Candidate RGB is
+    encoded by LaWAM before this function is called; the MI teacher aligns each
+    candidate with the full success trajectory, while the student consumes the
+    successful endpoint and measured relations. Unverified Cosmos candidates
+    are rejected by the dataset contract.
     """
 
     random.seed(seed)
@@ -310,8 +311,8 @@ def train_geoprogress(
     def teacher_potential(
         tokens: torch.Tensor,
         token_mask: torch.Tensor,
-        goals: torch.Tensor,
-        goal_mask: torch.Tensor,
+        goal_trajectories: torch.Tensor,
+        goal_trajectory_mask: torch.Tensor,
         relations: torch.Tensor,
         names: list[str],
     ) -> torch.Tensor:
@@ -321,8 +322,11 @@ def train_geoprogress(
             if not length:
                 continue
             state = tokens[batch_index, :length]
-            goal = goals[batch_index, goal_mask[batch_index]]
-            visual_phi = teacher.potential_batch(state, goal)
+            goal_length = int(goal_trajectory_mask[batch_index].sum().item())
+            if not goal_length:
+                continue
+            goal_trajectory = goal_trajectories[batch_index, :goal_length]
+            visual_phi = teacher.potential_aligned(state, goal_trajectory).phi
             relation_phi = relation_progress_potential(relations[batch_index, :length], names).to(tokens.device)
             phi[batch_index, :length] = visual_phi + relation_weight * relation_phi
         return phi
@@ -345,13 +349,29 @@ def train_geoprogress(
                 chosen_mask = batch["chosen_mask"].to(device_obj)  # type: ignore[index]
                 rejected_mask = batch["rejected_mask"].to(device_obj)  # type: ignore[index]
                 goal_mask = batch["goal_mask"].to(device_obj)  # type: ignore[index]
+                goal_trajectories = batch["goal_trajectory_tokens"].to(device_obj)  # type: ignore[index]
+                goal_trajectory_mask = batch["goal_trajectory_mask"].to(device_obj)  # type: ignore[index]
                 names = list(batch["relation_names"])  # type: ignore[arg-type]
 
                 student_chosen = model(chosen, goals, chosen_relations, chosen_mask, goal_mask)
                 student_rejected = model(rejected, goals, rejected_relations, rejected_mask, goal_mask)
                 with torch.no_grad():
-                    teacher_chosen = teacher_potential(chosen, chosen_mask, goals, goal_mask, chosen_relations, names)
-                    teacher_rejected = teacher_potential(rejected, rejected_mask, goals, goal_mask, rejected_relations, names)
+                    teacher_chosen = teacher_potential(
+                        chosen,
+                        chosen_mask,
+                        goal_trajectories,
+                        goal_trajectory_mask,
+                        chosen_relations,
+                        names,
+                    )
+                    teacher_rejected = teacher_potential(
+                        rejected,
+                        rejected_mask,
+                        goal_trajectories,
+                        goal_trajectory_mask,
+                        rejected_relations,
+                        names,
+                    )
                 chosen_rewards = model.compute_trajectory_score(
                     chosen, goals, chosen_relations, chosen_mask, goal_mask, gamma
                 )
@@ -404,7 +424,11 @@ def train_geoprogress(
         "num_heads": num_heads,
         "dropout": dropout,
         "mi_backend": backend.value,
+        "teacher_alignment": "monotonic_viterbi",
         "relation_weight": relation_weight,
+        "lambda_rank": lambda_rank,
+        "lambda_potential": lambda_potential,
+        "lambda_direction": lambda_direction,
         "gamma": gamma,
         "seed": seed,
     }
@@ -414,9 +438,13 @@ def train_geoprogress(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train legacy rewards or the verified goal-conditioned GeoProgress potential.")
-    parser.add_argument("--mode", default="ranking", choices=["ranking", "distill", "geoprogress"],
-                        help="ranking: legacy head; distill: legacy self-goal MI; geoprogress: verified explicit-goal training.")
+    parser = argparse.ArgumentParser(description="Train legacy rewards or the verified generalization reward potential.")
+    parser.add_argument(
+        "--mode",
+        default="ranking",
+        choices=["ranking", "distill", "generalization", "geoprogress"],
+        help="generalization: verified explicit-goal directional reward training; geoprogress is a legacy alias.",
+    )
     parser.add_argument("--preferences", required=True)
     parser.add_argument("--feature_root", required=True)
     parser.add_argument("--output_dir", required=True)
@@ -441,9 +469,9 @@ def main() -> None:
     args = parser.parse_args()
 
     kwargs = {k: v for k, v in vars(args).items() if k != "mode"}
-    if args.mode == "geoprogress":
+    if args.mode in {"generalization", "geoprogress"}:
         if not args.manifest or not args.success_refs:
-            parser.error("--manifest and --success_refs are required for --mode geoprogress")
+            parser.error("--manifest and --success_refs are required for --mode generalization")
         train_geoprogress(**kwargs)
     elif args.mode == "distill":
         for key in ("manifest", "success_refs", "num_layers", "num_heads", "dropout", "relation_weight", "mi_backend"):

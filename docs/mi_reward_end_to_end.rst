@@ -10,8 +10,9 @@ This document is the operational guide for the complete project:
 
    environment -> assets -> future data -> reward SFT -> RBM-EVAL -> Franka RLPD
 
-The workflow has two reward-model branches. ``GeoProgressPotential`` is the
-instance-aware, relation-conditioned branch. ``StatePotentialRewardModel`` is
+The workflow has two reward-model branches. The generalization reward is the
+relation-conditioned directional branch (implemented by ``GeoProgressPotential``).
+``StatePotentialRewardModel`` is
 the RGB/feature branch intended for RBM-EVAL and the standard RLinf potential
 shaping adapter. A GeoProgress checkpoint must not be silently treated as an
 RGB-only checkpoint.
@@ -19,17 +20,18 @@ RGB-only checkpoint.
 Status at a glance
 ==================
 
-+-------+-----------------------------+----------------------------------------------+
-| Stage | Main entry point             | Status                                       |
-+=======+=============================+==============================================+
-| 1     | ``requirements/install.sh``  | Environment scripts implemented              |
-| 2     | Task YAML and assets         | User assets required                         |
-| 3     | ``prepare_instance_data.sh`` | Orchestrator implemented; workers external   |
-| 4     | ``train_reward_sft.py``      | Reward SFT implemented                        |
-| 5     | ``eval/run_rbm_eval.sh``     | Implemented for compatible checkpoints       |
-| 6     | RLinf integration             | Adapter scaffold; manual wiring and hardware |
-|       |                              | validation remain                             |
-+-------+-----------------------------+----------------------------------------------+
++-------+---------------------------------------+----------------------------------------------+
+| Stage | Main entry point                      | Status                                       |
++=======+=======================================+==============================================+
+| 1     | ``requirements/install.sh``           | Environment scripts implemented              |
+| 2     | Task YAML and assets                  | User assets required                         |
+| 3     | ``generate_generalization_data.sh``   | Transfer worker implemented; SAM3/MuJoCo/   |
+|       |                                       | planner/Predict workers remain configurable  |
+| 4     | ``run_generalization_reward.sh``      | Directional reward SFT implemented           |
+| 5     | ``eval/run_rbm_eval.sh``              | Implemented for compatible checkpoints       |
+| 6     | RLinf integration                     | Adapter scaffold; manual wiring and hardware |
+|       |                                       | validation remain                            |
++-------+---------------------------------------+----------------------------------------------+
 
 Stage 1: Install environments
 ==============================
@@ -41,18 +43,18 @@ Run all commands from the repository root:
    cd /home/ddt/MI-directional-WAM-reward-model-pretrain
 
 Create the shared environment used by SAM3, Cosmos, MuJoCo, feature extraction,
-and instance data preparation:
+and scene/instance generalization data generation:
 
 .. code-block:: bash
 
-   bash requirements/install.sh --instance-data
+   bash requirements/install.sh --generalization-data
 
 Download the local model weights after Hugging Face authentication:
 
 .. code-block:: bash
 
    hf auth login
-   bash requirements/install.sh --instance-data --download-weights
+   bash requirements/install.sh --generalization-data --download-weights
 
 The shared environment stores source trees and weights at:
 
@@ -60,6 +62,7 @@ The shared environment stores source trees and weights at:
 
    .venv/src/sam3
    .venv/src/cosmos-predict2.5
+   .venv/src/cosmos-transfer2.5
    .venv/models/sam3
    .venv/models/cosmos-predict2.5
    .venv/models/cosmos-transfer2.5
@@ -91,7 +94,7 @@ Activate the environment for all following local commands:
    export PYOPENGL_PLATFORM=egl
 
 The optional ``--mi-cosmos`` and ``--rlpd`` targets create isolated legacy
-environments. They are not required for the shared instance-data/RBM-EVAL path.
+environments. They are not required for the shared generalization/RBM-EVAL path.
 
 Stage 2: Prepare custom assets
 ==============================
@@ -140,14 +143,14 @@ A recommended asset layout is:
    └── task.yaml
 
 The existing task templates cover ``pick_place``, ``push_shape`` and
-``peg_insertion`` under ``mi_reward/configs/tasks/``. The main instance config
-is ``mi_reward/configs/instance_geoprogress.yaml``.
+``peg_insertion`` under ``mi_reward/configs/tasks/``. The main configuration is
+``mi_reward/configs/generalization_reward.yaml``.
 
 Stage 3: Generate and verify future data
 =========================================
 
 Configure the following paths and task fields in
-``mi_reward/configs/instance_geoprogress.yaml``:
+``mi_reward/configs/generalization_reward.yaml``:
 
 * ``paths.candidate_records``
 * ``paths.manifest``
@@ -155,28 +158,57 @@ Configure the following paths and task fields in
 * ``paths.feasibility_config``
 * ``task_family`` and ``task_families``
 * ``data_preparation.sam3`` and ``data_preparation.cosmos``
+* ``execution.stages`` for the concrete SAM3, scene-transfer, MuJoCo, planner,
+  and Predict workers
 
 The normal worker order is:
 
 .. code-block:: text
 
-   SAM3 -> Cosmos Transfer -> MuJoCo -> planner -> Cosmos Predict
+   SAM3 -> MuJoCo (instance-level) -> planner -> Cosmos Predict -> Cosmos Transfer (scene-level)
 
 Each external worker receives ``{python}``, ``{request}``, and ``{result}``
 placeholders and must write a result JSON containing the next ``records_path``.
 The last worker must write exactly ``paths.candidate_records``.
 
-The default configuration contains ``execution.stages: []``. This is only the
-pre-generated-candidate ingest mode. It does not launch SAM3, Cosmos, MuJoCo,
-or a planner. If no candidate JSONL already exists, fill in the release-specific
-worker commands before running the non-dry-run command.
+The repository implements the scene worker in
+``mi_reward/data/cosmos_transfer_worker.py``. It calls the official
+``.venv/src/cosmos-transfer2.5/examples/inference.py`` entry point, converts
+frame/depth/mask sequences to control videos, uses SAM foreground masks as the
+white depth-control region so robot/task geometry remains constrained while the
+background follows the scene prompt, expands every base trajectory over
+``mi_reward/configs/scene_variants.yaml``, and writes ``scene_variant``
+provenance into the output JSONL.
+Video conversion uses the ``imageio-ffmpeg`` binary installed inside ``.venv``.
+All generated specs are submitted in one official batch so the 2B model is
+loaded once per worker run rather than once per trajectory variant.
+The ready-to-enable command passes the pinned local depth checkpoint under
+``.venv/models/cosmos-transfer2.5/general/depth`` so inference does not silently
+use a second checkpoint location.
+
+The default ``execution.stages`` contains an enabled Transfer entry. Therefore
+``generate_generalization_data.sh`` does not silently skip scene variation. Its
+input is the Predict worker's complete
+trajectory JSONL and its output is the final ``paths.candidate_records``.
+Transfer changes the rendered frames while preserving the same action,
+robot-state, object-state, relation, and physical-verification sidecars.
+The default upstream path is
+``dataset/mi_reward/generalization_rollouts/predict_records.jsonl``. Add the
+release-specific SAM3, MuJoCo, planner, and Predict worker entries before
+Transfer, or create this base-rollout JSONL in a preceding job. A missing file
+is a hard error in both dry-run and normal execution.
+Cosmos Transfer belongs only to this data-generation stage; it is never called
+by reward SFT.
+The official 2B Transfer model documents 65.4 GB for its single-GPU path; use an
+appropriate multi-GPU launch or a supported distilled control model when
+deploying this worker.
 
 Validate configuration and worker hand-offs first:
 
 .. code-block:: bash
 
-   bash mi_reward/scripts/prepare_instance_data.sh \
-     --config mi_reward/configs/instance_geoprogress.yaml \
+   bash mi_reward/scripts/generate_generalization_data.sh \
+     --config mi_reward/configs/generalization_reward.yaml \
      --task-suite rigid_v1 \
      --dry-run
 
@@ -184,16 +216,16 @@ Run generation and deterministic verification:
 
 .. code-block:: bash
 
-   bash mi_reward/scripts/prepare_instance_data.sh \
-     --config mi_reward/configs/instance_geoprogress.yaml \
+   bash mi_reward/scripts/generate_generalization_data.sh \
+     --config mi_reward/configs/generalization_reward.yaml \
      --task-suite rigid_v1
 
 The accepted output must include:
 
 .. code-block:: text
 
-   dataset/mi_reward/manifests/instance_rigid_v1.jsonl
-   dataset/mi_reward/manifests/instance_rigid_v1_success_refs.jsonl
+   dataset/mi_reward/manifests/generalization_rigid_v1.jsonl
+   dataset/mi_reward/manifests/generalization_rigid_v1_success_refs.jsonl
 
 For every accepted candidate, strict training validation requires:
 
@@ -216,25 +248,31 @@ these files must already exist.
 Stage 4: Train reward models
 ============================
 
-GeoProgress branch
-------------------
+Generalization reward branch
+----------------------------
 
-Use this branch for instance-aware, physically verified supervision:
+Use this branch for generalization-aware, physically verified supervision:
 
 .. code-block:: bash
 
-   bash mi_reward/scripts/run_instance_geoprogress.sh \
-     --config mi_reward/configs/instance_geoprogress.yaml
+   bash mi_reward/scripts/run_generalization_reward.sh \
+     --config mi_reward/configs/generalization_reward.yaml
 
-This runs manifest validation, LAM token extraction, relation-aware MI
-preference construction, and GeoProgress SFT. The usual checkpoint is:
+This runs manifest validation, LAM token extraction, monotonic MI trajectory
+alignment, relation-aware directional preference construction, and reward SFT.
+The directional weights and loss weights are configured under ``training`` in
+``generalization_reward.yaml``. The usual checkpoint is:
 
 .. code-block:: text
 
-   results/mi_reward/instance_rigid_v1/pytorch_model.pt
+   results/mi_reward/generalization_rigid_v1/pytorch_model.pt
 
-GeoProgress consumes visual tokens, successful goal tokens, and measured
-relations. Its relation sidecars must be retained for later inference.
+The generalization reward consumes visual tokens, successful goal tokens, and measured
+relations. Its relation sidecars must be retained for later inference. The
+directional teacher aligns each candidate to the complete successful reference
+trajectory and adds measured relation progress; the student is trained with ranking, potential
+distillation, and directional-difference losses. No Cosmos model is called in
+this stage.
 
 StatePotential branch
 ---------------------
@@ -358,7 +396,9 @@ Do not start a stage until the preceding artifact exists:
    Stage 5: metrics.json
    Stage 6: RLinf dummy-mode validation, then hardware review
 
-The data-generation workers and the final RLinf registry/hardware integration
-are deployment-specific. The repository therefore documents their contracts
-but does not claim that the full six-stage process is currently one-command
-automatic.
+The SAM3, MuJoCo, planner, and Predict workers are deployment-specific external
+commands. The repository implements their hand-off contract and the official
+Cosmos Transfer worker, but does not claim that those upstream workers are
+automatically installed or that the full six-stage process is one-command
+automatic on every machine. The final RLinf registry/hardware integration also
+remains deployment-specific.

@@ -55,6 +55,9 @@ class GeoProgressCollator:
         chosen, chosen_mask = _pad_token_trajectories([item["chosen_tokens"] for item in items])  # type: ignore[list-item]
         rejected, rejected_mask = _pad_token_trajectories([item["rejected_tokens"] for item in items])  # type: ignore[list-item]
         goals, goal_mask = _pad_goals([item["goal_tokens"] for item in items])  # type: ignore[list-item]
+        goal_trajectories, goal_trajectory_mask = _pad_token_trajectories(
+            [item["goal_trajectory_tokens"] for item in items]  # type: ignore[list-item]
+        )
         return {
             "pairs": [item["pair"] for item in items],
             "relation_names": names,
@@ -64,6 +67,8 @@ class GeoProgressCollator:
             "rejected_mask": rejected_mask,
             "goal_tokens": goals,
             "goal_mask": goal_mask,
+            "goal_trajectory_tokens": goal_trajectories,
+            "goal_trajectory_mask": goal_trajectory_mask,
             "chosen_relations": _pad_relations([item["chosen_relations"] for item in items]),  # type: ignore[list-item]
             "rejected_relations": _pad_relations([item["rejected_relations"] for item in items]),  # type: ignore[list-item]
             "chosen_confidence": torch.tensor([item["pair"].chosen_confidence for item in items], dtype=torch.float32),  # type: ignore[union-attr]

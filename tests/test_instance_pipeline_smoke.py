@@ -68,3 +68,26 @@ def test_training_gate_rejects_incomplete_accepted_candidate(tmp_path: Path) -> 
         assert "frames" in str(exc)
     else:
         raise AssertionError("incomplete accepted candidate must not reach reward training")
+
+
+def test_training_gate_rejects_manifest_without_accepted_candidates(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.jsonl"
+    write_jsonl(
+        manifest,
+        [
+            TrajectoryExample(
+                traj_id="instance/pick_place/rejected",
+                task="pick_place",
+                frames=[],
+                source="instance_rollout",
+                split="train",
+                verification=VerificationRecord(status="rejected", checks={"all": False}, reasons=["invalid"]),
+            )
+        ],
+    )
+    try:
+        validate_training_manifest(manifest)
+    except ValueError as exc:
+        assert "no accepted candidates" in str(exc)
+    else:
+        raise AssertionError("an empty accepted set must not reach reward training")

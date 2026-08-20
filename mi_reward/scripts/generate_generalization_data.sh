@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 1: prepare SAM3/Cosmos/MuJoCo instance-aware rollout data.
+# Stage 1: generate and verify scene/instance generalization data.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -8,17 +8,15 @@ cd "$REPO_ROOT"
 
 if [ -f ".venv/bin/activate" ]; then
     source .venv/bin/activate
-elif [ -f ".venv-mi/bin/activate" ]; then
-    source .venv-mi/bin/activate
 else
-    echo "Missing data-preparation environment. Run: bash requirements/install.sh --instance-data" >&2
+    echo "Missing data-generation environment. Run: bash requirements/install.sh --generalization-data" >&2
     exit 1
 fi
 
 export MUJOCO_GL="${MUJOCO_GL:-egl}"
 export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
 
-CONFIG="mi_reward/configs/instance_geoprogress.yaml"
+CONFIG="mi_reward/configs/generalization_reward.yaml"
 ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -29,4 +27,4 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-python -m mi_reward.data.instance_pipeline --config "$CONFIG" "${ARGS[@]}"
+python -m mi_reward.data.generalization_pipeline --config "$CONFIG" "${ARGS[@]}"

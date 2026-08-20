@@ -137,6 +137,10 @@ def score_candidate_trajectory(
     Returns:
         DirectionalPotentialResult with scores and metadata
     """
+    if config.multi_reference_aggregation not in {"best", "mean", "logsumexp"}:
+        raise ValueError(
+            "multi_reference_aggregation must be one of 'best', 'mean', or 'logsumexp'."
+        )
     T = candidate_features.shape[0]
 
     best_result = None
@@ -206,13 +210,24 @@ def score_candidate_trajectory(
 
         ref_scores.append((directional_score, result))
 
-        if config.multi_reference_aggregation == "best":
-            if directional_score > best_total:
-                best_total = directional_score
-                best_result = result
+        if directional_score > best_total:
+            best_total = directional_score
+            best_result = result
 
     if best_result is None and ref_scores:
         best_result = ref_scores[0][1]
+
+    if best_result is not None and ref_scores and config.multi_reference_aggregation != "best":
+        scores_tensor = torch.tensor(
+            [score for score, _ in ref_scores], device=candidate_features.device, dtype=torch.float32
+        )
+        if config.multi_reference_aggregation == "mean":
+            aggregate_score = float(scores_tensor.mean().item())
+        else:
+            aggregate_score = float(torch.logsumexp(scores_tensor, dim=0).item())
+        # Keep the highest-scoring alignment path as the representative path,
+        # but expose the requested multi-reference aggregate as its score.
+        best_result.directional_score = aggregate_score
 
     if best_result is None:
         # No references matched — return zero result

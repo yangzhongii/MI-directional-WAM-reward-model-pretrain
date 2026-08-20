@@ -1,4 +1,10 @@
-"""External Cosmos Transfer2.5 worker contract for scene-level variation."""
+"""Request/result contract for scene-level Transfer artifacts.
+
+The executable generalization-data stage is
+``mi_reward.data.cosmos_transfer_worker``. This module remains the small typed
+contract used by integrations that submit one Transfer request directly; it
+does not launch Cosmos by itself.
+"""
 
 from __future__ import annotations
 
