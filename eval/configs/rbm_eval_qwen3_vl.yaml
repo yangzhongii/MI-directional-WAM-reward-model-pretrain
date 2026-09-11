@@ -1,0 +1,24 @@
+# Qwen3-VL reward config placeholder.
+# This file keeps the RBM-EVAL benchmark settings separate from the legacy
+# LaWAM reward checkpoint config. The adapter backend must support model.type
+# qwen3_vl before this config can be used for a real run.
+
+robometer:
+  source_root: .venv/src/robometer
+  processed_datasets: .venv/datasets/robometer
+
+paths:
+  checkpoint: logs/mi_reward/v3_teacher_mainline/qwen3_vl_reward_v1/model
+  output_dir: logs/mi_reward/v3_teacher_mainline/rbm_eval_qwen3_vl
+
+model:
+  type: qwen3_vl
+  model_path: logs/mi_reward/v3_teacher_mainline/qwen3_vl_reward_v1/model
+  device: cuda
+
+benchmark:
+  eval_types: [reward_alignment, policy_ranking, quality_preference]
+  datasets:
+    reward_alignment: [aliangdw_metaworld_metaworld_eval]
+    policy_ranking: [jesbu1_usc_koch_p_ranking_rfm_usc_koch_p_ranking_all]
+    quality_preference: [aliangdw_metaworld_metaworld_eval]

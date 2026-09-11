@@ -1,0 +1,33 @@
+version: 1
+model:
+  size: 2B
+  source: .venv/src/cosmos-predict2.5
+  checkpoint: .venv/models/cosmos-predict2.5/robot/action-cond/38c6c645-7d41-4560-8eeb-6f4ddc0e6574_ema_bf16.pt
+  tokenizer: .venv/models/cosmos-predict2.5/tokenizer.pth
+
+dataset:
+  root: logs/world_model/libero_dual_view
+  train_annotation_split: cosmos_train
+  val_annotation_split: val
+  test_annotation_split: test
+  multiview: true
+  # ActionConditionedMultiViewDataset expects [candidate base cameras, wrist].
+  camera_ids: [[0], 1]
+  camera_names: [agentview, wrist]
+  resolution: [256, 320]
+  num_action_per_chunk: 12
+  # Official LIBERO demos are 20 Hz; the public Bridge action recipe is 4 fps.
+  fps_downsample_ratio: 5
+
+training:
+  batch_size_per_gpu: 1
+  max_iter: 1000
+  save_iter: 200
+  output_root: logs/world_model/cosmos_action_lora_2b_multiview
+
+distributed:
+  master_addr: 172.16.0.6
+  master_port: 29500
+  interface: auto
+  remote_host: zhonghaoyang@172.16.0.3
+  remote_root: /mnt/public/zhonghaoyang/MI-directional-WAM-reward-model-pretrain

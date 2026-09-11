@@ -1,0 +1,87 @@
+# Standard closed-loop validation for the frozen VisualGoalPotential.
+# Each task/reward-mode/seed is an independent SAC run. The policy is a
+# measurement instrument; the MI value/reward model remains frozen.
+run_id: libero_mi_sac_v1
+output_root: logs/mi_reward/libero_closed_loop
+
+runtime:
+  python: .venv-libero/bin/python
+  device: cuda
+
+benchmark:
+  variant: libero
+  suite: libero_spatial
+  task_ids: [0, 1, 2]
+  resolution: 256
+  settle_steps: 10
+  max_episode_steps: 250
+  # Official initial states are partitioned before training. These measure
+  # layout/pose generalization, not held-out semantic object identity.
+  train_init_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+                       10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+                       20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+  evaluation_splits:
+    id_heldout:
+      init_indices: [30, 31, 32, 33, 34, 35, 36, 37, 38, 39]
+      appearance: none
+    layout_heldout:
+      init_indices: [40, 41, 42, 43, 44, 45, 46, 47, 48, 49]
+      appearance: none
+    appearance_heldout:
+      init_indices: [30, 31, 32, 33, 34, 35, 36, 37, 38, 39]
+      appearance: dark_warm
+
+features:
+  extractor: lawam_lam
+  lam_config_path: .venv/models/lawam_lam/dino_large_vae.yaml
+  lam_ckpt_path: .venv/models/lawam_lam/checkpoints/pytorch_model.pt
+  dino_checkpoint_root: .venv/models/dinov3-vitb16-pretrain-lvd1689m
+  image_size: 256
+  device: cuda
+  strict: true
+
+goal:
+  # Uses a terminal frame from an official demonstration and never uses a
+  # success signal from the evaluation rollout itself.
+  mode: libero_demo_terminal
+  demo_index: 0
+
+reward:
+  checkpoint: logs/mi_reward/generalization_rigid_v3/results/reward_model/pytorch_model.pt
+  gamma: 0.99
+  sparse_weight: 1.0
+  mi_weight: 1.0
+  clip_delta: 1.0
+  max_history: 64
+  modes: [sparse, mi, sparse_mi]
+
+training:
+  seeds: [0, 1, 2]
+  total_env_steps: 100000
+  random_steps: 5000
+  replay_capacity: 200000
+  batch_size: 256
+  updates_per_step: 1
+  eval_interval: 10000
+  checkpoint_interval: 10000
+  sac:
+    hidden_dims: [256, 256]
+    gamma: 0.99
+    tau: 0.005
+    actor_lr: 0.0001
+    critic_lr: 0.0001
+    alpha_lr: 0.0001
+    init_temperature: 0.1
+    grad_clip_norm: 10.0
+
+evaluation:
+  episodes_per_state: 1
+  save_videos: true
+  max_videos_per_split: 3
+
+distributed:
+  # Distribution is experiment-level sharding: each machine trains complete
+  # task/mode/seed runs. It does not pretend that two 48 GB GPUs share memory.
+  host: zhonghaoyang@172.16.0.3
+  remote_root: /mnt/public/zhonghaoyang/MI-directional-WAM-reward-model-pretrain
+  sync_remote: true

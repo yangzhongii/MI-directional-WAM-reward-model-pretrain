@@ -1,0 +1,191 @@
+run_id: libero_mi_rlpd_joint_trend_v3_task0_pilot
+output_root: logs/mi_reward/libero_rlpd_closed_loop
+runtime:
+  python: .venv-libero/bin/python
+  device: cuda
+benchmark:
+  variant: libero
+  suite: libero_spatial
+  task_ids:
+  - 0
+  settle_steps: 10
+  max_episode_steps: 250
+  train_init_indices:
+  - 0
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  - 7
+  - 8
+  - 9
+  - 10
+  - 11
+  - 12
+  - 13
+  - 14
+  - 15
+  - 16
+  - 17
+  - 18
+  - 19
+  - 20
+  - 21
+  - 22
+  - 23
+  - 24
+  - 25
+  - 26
+  - 27
+  - 28
+  - 29
+  evaluation_splits:
+    id_heldout:
+      init_indices:
+      - 30
+      - 31
+      - 32
+      - 33
+      - 34
+      - 35
+      - 36
+      - 37
+      - 38
+      - 39
+      appearance: none
+    layout_heldout:
+      init_indices:
+      - 40
+      - 41
+      - 42
+      - 43
+      - 44
+      - 45
+      - 46
+      - 47
+      - 48
+      - 49
+      appearance: none
+    appearance_heldout:
+      init_indices:
+      - 30
+      - 31
+      - 32
+      - 33
+      - 34
+      - 35
+      - 36
+      - 37
+      - 38
+      - 39
+      appearance: dark_warm
+policy:
+  camera_names:
+  - agentview
+  - robot0_eye_in_hand
+  observation_keys:
+  - agentview_image
+  - robot0_eye_in_hand_image
+  image_size: 128
+features:
+  extractor: lawam_lam
+  lam_config_path: .venv/models/lawam_lam/dino_large_vae.yaml
+  lam_ckpt_path: .venv/models/lawam_lam/checkpoints/pytorch_model.pt
+  dino_checkpoint_root: .venv/models/dinov3-vitb16-pretrain-lvd1689m
+  image_size: 256
+  device: cuda
+  strict: true
+goal:
+  mode: libero_demo_terminal
+  demo_index: 0
+reward:
+  checkpoint: logs/mi_reward/generalization_rigid_v3/results/reward_model/pytorch_model.pt
+  gamma: 0.96
+  sparse_weight: 1.0
+  mi_weight: 1.0
+  clip_delta: 1.0
+  max_history: 64
+  trend_history_size: 5
+  trend_input_interval: 1
+  trend_baseline_horizon: 16
+  trend_direction: -1.0
+  kinematic_enabled: true
+  kinematic_reference_demos: 10
+  kinematic_max_stage_step: 8
+  kinematic_initial_match_fraction: 0.2
+  kinematic_advance_margin: 0.001
+  kinematic_positive_threshold: 0.01
+  directional_consensus_steps: 2
+  positive_threshold: 0.005
+  negative_threshold: -0.005
+  positive_reward: 1.0
+  negative_reward: -0.2
+  unclear_reward: 0.0
+  trend_weight: 1.0
+  success_bonus: 20.0
+  success_threshold: 0.5
+  log_reward_steps: true
+  modes:
+  - sparse
+  - sparse_trend
+  calibration:
+    source_config: /home/zhonghaoyang/MI-directional-WAM-reward-model-pretrain/mi_reward/configs/libero_rlpd_closed_loop.yaml
+    task_id: 0
+    validation_status: passed
+training:
+  seeds:
+  - 0
+  total_env_steps: 10000
+  random_steps: 1000
+  replay_capacity: 50000
+  demo_capacity: 20000
+  max_demos: 10
+  max_demo_transitions: null
+  batch_size: 256
+  updates_per_step: 4
+  critic_actor_ratio: 4
+  eval_interval: 5000
+  checkpoint_interval: 5000
+  rlpd:
+    hidden_dims:
+    - 256
+    - 256
+    visual_dim: 256
+    state_latent_dim: 64
+    spatial_features: 4
+    num_q_heads: 10
+    critic_subsample_size: 2
+    gamma: 0.96
+    tau: 0.005
+    actor_lr: 0.0003
+    critic_lr: 0.0003
+    alpha_lr: 0.0003
+    init_temperature: 0.01
+    grad_clip_norm: 10.0
+    freeze_backbone: true
+    encoder_checkpoint: .venv/models/resnet18-imagenet/resnet18-f37072fd.pth
+evaluation:
+  episodes_per_state: 1
+  save_videos: true
+  max_videos_per_split: 3
+reward_audit:
+  max_demos: 5
+  random_episodes: 5
+  random_max_steps: 100
+  static_steps: 16
+  min_static_unclear_fraction: 0.95
+  max_random_positive_fraction: 0.2
+  min_success_positive_gap: 0.15
+  min_success_random_auc: 0.7
+  calibration_fraction: 0.4
+  min_positive_threshold: 0.005
+  calibrated_config: mi_reward/configs/libero_rlpd_task0_joint_pilot_calibrated.yaml
+  pilot_env_steps: 10000
+  pilot_eval_interval: 5000
+  pilot_checkpoint_interval: 5000
+distributed:
+  host: zhonghaoyang@172.16.0.3
+  remote_root: /mnt/public/zhonghaoyang/MI-directional-WAM-reward-model-pretrain
+  sync_remote: true

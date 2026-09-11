@@ -1,0 +1,38 @@
+# Pipeline v6 / Test 1b: action-induced normalized latent delta is primary.
+representation:
+  backbone: frozen_lawam_visual_tokens
+  view: wrist
+  control_dim: 64
+  preserve_spatial_tokens: true
+  projector: layernorm_row_normalized_linear
+
+dynamics:
+  action_coordinate: actual_eef_displacement_xyz
+  action_dim: 3
+  action_scale_m: 0.003
+  hidden_dim: 64
+  spatial_mixing: transformer_encoder_layer
+  spatial_heads: 4
+  form: state_conditioned_delta
+  zero_action_identity: true
+
+training:
+  loss:
+    normalized_delta_cosine: 1.0
+    normalized_delta_smooth_l1: 1.0
+    next_latent_reconstruction: 0.10
+  optimizer: adamw
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  batch_size: 8
+  epochs: 100
+  seed: 20260910
+
+checkpoint_selection:
+  minimum_validation_next_latent_r2: 0.50
+  maximize: validation_delta_cosine_median
+
+split:
+  train_demos: [3, 6, 7, 8, 9, 11, 12, 13]
+  validation_demos: [14, 15]
+  frozen_test_demos: [1, 2, 4, 5, 10]

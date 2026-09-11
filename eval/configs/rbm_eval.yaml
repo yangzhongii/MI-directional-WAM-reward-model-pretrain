@@ -1,0 +1,62 @@
+# RBM-EVAL configuration for MI/LaWAM reward checkpoints.
+# Paths are relative to the repository root unless absolute.
+robometer:
+  source_root: .venv/src/robometer
+  processed_datasets: .venv/datasets/robometer
+
+paths:
+  checkpoint: logs/mi_reward/generalization_rigid_v3/results/reward_model/pytorch_model.pt
+  output_dir: logs/mi_reward/generalization_rigid_v3/results/rbm_eval
+
+model:
+  # auto reads checkpoint.config.model_class. VisualGoalPotential can run with
+  # its learned null goal and never needs action/relation sidecars.
+  type: auto
+  device: cuda
+  precision: fp32
+  preference_aggregation: last  # last | mean | sum | delta
+
+features:
+  # Must match the visual encoder used by generalization reward training.
+  extractor: lawam_lam
+  model_path: .venv/models/dinov3-vitb16-pretrain-lvd1689m
+  lam_config_path: .venv/models/lawam_lam/dino_large_vae.yaml
+  lam_ckpt_path: .venv/models/lawam_lam/checkpoints/pytorch_model.pt
+  vision_model_id: .venv/models/dinov3-vitb16-pretrain-lvd1689m
+  image_size: 224
+  batch_size: 8
+  strict: true
+
+# GeoProgressPotential additionally needs an explicit sidecar. Each JSONL row
+# must contain trajectory_id, relations ([[T, relation_dim]]), and either
+# goal_frames ([path, ...]) or goal_tokens_path ([K, visual_dim] torch tensor).
+geoprogress:
+  relation_sidecar: null
+
+# Optional success-goal images keyed by trajectory_id or task. Leave null to
+# use the null-goal mode learned through training.goal_dropout.
+visual_goal:
+  goal_sidecar: null
+
+benchmark:
+  eval_types: [reward_alignment, policy_ranking, quality_preference]
+  datasets:
+    # These are current processed-dataset keys from Robometer's official
+    # baseline_eval_config.yaml.  The previous rbm-1m-ood alias is not a
+    # downloadable archive in the current Robometer repository.
+    reward_alignment: [aliangdw_metaworld_metaworld_eval]
+    policy_ranking: [jesbu1_usc_koch_p_ranking_rfm_usc_koch_p_ranking_all]
+    quality_preference: [aliangdw_metaworld_metaworld_eval]
+  max_frames: 16
+  min_frames_per_trajectory: 2
+  use_frame_steps: false
+  reward_alignment_max_trajectories: 50
+  policy_ranking_max_tasks: 100
+  num_examples_per_quality_pr: 5
+  comparisons_per_task: null
+  max_comparisons: 1000
+  random_seed: 42
+  pad_frames: false
+
+runtime:
+  save_raw_results: true

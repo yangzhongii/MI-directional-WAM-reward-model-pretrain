@@ -1,0 +1,260 @@
+# One-command offline data preparation. Real-robot collection is intentionally
+# outside this repository; switch base_data.source to jsonl when real-robot records
+# are connected later.
+task_suite: rigid_v1
+task_family: pick_place
+task_families: [pick_place, push_shape, peg_insertion]
+run_id: generalization_rigid_v3
+run_root: logs/mi_reward/generalization_rigid_v3
+
+base_data:
+  # The default benchmark pipeline is physically and semantically closed:
+  # each task starts from its own MuJoCo config. Robometer remains available as
+  # an optional ablation/evaluation source, but must not seed these rollouts.
+  source: simulator_native  # simulator_native | robometer | jsonl
+  output_records: logs/mi_reward/generalization_rigid_v3/data/base/simulator_native_base_records.jsonl
+  simulator_native:
+    # Five independent initial states × eight controlled candidate profiles.
+    # With 2 instances and 2 scenes this emits 120 samples per split.
+    seeds_per_task: 5
+    split: train
+    task_configs:
+      - mi_reward/configs/tasks/pick_place_apple_banana.yaml
+      - mi_reward/configs/tasks/push_t_to_b.yaml
+      - mi_reward/configs/tasks/peg_insertion_variants.yaml
+  # Used only when source: jsonl.
+  input_records: null
+  robometer:
+    processed_root: .venv/datasets/robometer
+    datasets:
+      - jesbu1_usc_koch_p_ranking_rfm_usc_koch_p_ranking_all
+    max_trajectories_per_dataset: 200
+    split: train
+    success_labels: [successful, success]
+    task_rules:
+      - match: '(?i)\b(insert|insertion|peg)\b'
+        task_family: peg_insertion
+        physical_task_config: mi_reward/configs/tasks/peg_insertion_variants.yaml
+        object_prompts:
+          task_object: peg
+          goal: insertion hole
+          robot: robot arm
+      - match: '(?i)\bpush\b'
+        task_family: push_shape
+        physical_task_config: mi_reward/configs/tasks/push_t_to_b.yaml
+        object_prompts:
+          task_object: object being pushed
+          goal: target outline
+          robot: robot arm
+      # The selected USC Koch ranking subset names its compatible rigid tasks
+      # as "Move ..." and "Throw ... in ..." rather than pick/place.  Open-bin
+      # (articulated) and Separate-two-cups (multi-object) rows are deliberately
+      # excluded from this single-rigid-object template.
+      - match: '(?i)\b(pick|place|put|stack|move|throw)\b'
+        task_family: pick_place
+        physical_task_config: mi_reward/configs/tasks/pick_place_apple_banana.yaml
+        object_prompts:
+          task_object: object being manipulated
+          goal: destination container
+          robot: robot arm
+
+data_preparation:
+  environment_root: .venv
+  python: .venv/bin/python
+  headless: true
+  mujoco_gl: egl
+  source_roots:
+    segmentation: .venv/src/sam2
+    cosmos_predict: .venv/src/cosmos-predict2.5
+    cosmos_transfer: .venv/src/cosmos-transfer2.5
+    robometer: .venv/src/robometer
+  model_roots:
+    segmentation: .venv/models/sam2
+    cosmos_predict: .venv/models/cosmos-predict2.5
+    cosmos_transfer: .venv/models/cosmos-transfer2.5
+
+paths:
+  # The reference stage removes one independent success trajectory per task/instance
+  # and emits the remaining physical trajectories as training candidates.
+  candidate_records: logs/mi_reward/generalization_rigid_v3/data/generalization_rollouts/physical_candidates.jsonl
+  manifest: logs/mi_reward/generalization_rigid_v3/data/manifests/generalization_rigid_v3.jsonl
+  success_refs: logs/mi_reward/generalization_rigid_v3/data/manifests/generalization_rigid_v3_success_refs.jsonl
+  feasibility_config: mi_reward/configs/feasibility_rigid.json
+  run_report: logs/mi_reward/generalization_rigid_v3/results/data_report.json
+
+verification:
+  max_pose_step: 0.25
+  require_controls: true
+  require_scene_variant: true
+  min_accepted_candidates: 360
+  min_acceptance_rate: 0.75
+  require_scene_coverage: true
+  require_task_family_coverage: true
+  require_split_coverage: true
+
+generation:
+  planner_candidates: 8
+  predict_candidates: 1
+  # LaWAM resizes inputs internally; 320x256 keeps enough tabletop detail
+  # while avoiding tens of GiB of redundant 640x480 PNG artifacts.
+  render_width: 320
+  render_height: 256
+  planner_seed: 0
+  transfer_gpus: 1
+
+execution:
+  # Optional task-sharding mode. Keep disabled for the original single-host
+  # pipeline. The rsync transport supports independent repository/log paths:
+  # it pushes each remote shard and referenced artifacts, then pulls outputs
+  # back to the local run root. `--distributed` enables this block at runtime.
+  distributed:
+    enabled: false
+    transport: rsync
+    sync_project: true
+    stages: [planner, simulator, predict, transfer]
+    nodes:
+      - host: local
+        rank: 0
+        repo_root: /home/zhonghaoyang/MI-directional-WAM-reward-model-pretrain
+        python: /home/zhonghaoyang/MI-directional-WAM-reward-model-pretrain/.venv/bin/python
+        gpus: 1
+        env:
+          NCCL_SOCKET_IFNAME: enp131s0
+          GLOO_SOCKET_IFNAME: enp131s0
+      - host: zhonghaoyang@172.16.0.3
+        rank: 1
+        repo_root: /mnt/public/zhonghaoyang/MI-directional-WAM-reward-model-pretrain
+        # A per-node Python is allowed. This existing environment has the
+        # planner/MuJoCo dependencies; Predict/Transfer need their own matching
+        # Cosmos environment before those optional stages are enabled.
+        python: /mnt/public/zhonghaoyang/MI-directional-WAM-reward-model-pretrain/.venv/bin/python
+        gpus: 1
+        env:
+          NCCL_SOCKET_IFNAME: enp131s0
+          GLOO_SOCKET_IFNAME: enp131s0
+
+  stages:
+    - name: segmentation
+      # Optional for image-backed external datasets. Simulator-native masks and
+      # depth are rendered directly by MuJoCo.
+      enabled: false
+      input_records: logs/mi_reward/generalization_rigid_v3/data/base/simulator_native_base_records.jsonl
+      output_records: logs/mi_reward/generalization_rigid_v3/data/generalization_rollouts/segmentation_records.jsonl
+      command:
+        - '{python}'
+        - -m
+        - mi_reward.perception.segmentation_worker
+        - --request
+        - '{request}'
+        - --result
+        - '{result}'
+        - --backend-config
+        - .venv/models/segmentation.json
+        - --allow-missing-prompts
+    - name: planner
+      input_records: logs/mi_reward/generalization_rigid_v3/data/base/simulator_native_base_records.jsonl
+      output_records: logs/mi_reward/generalization_rigid_v3/data/generalization_rollouts/planner_records.jsonl
+      command:
+        - '{python}'
+        - -m
+        - mi_reward.planning.rigid_task_planner
+        - --request
+        - '{request}'
+        - --result
+        - '{result}'
+        - --num-candidates
+        - '{planner_candidates}'
+        - --seed
+        - '{planner_seed}'
+    - name: simulator
+      output_records: logs/mi_reward/generalization_rigid_v3/data/generalization_rollouts/physical_records.jsonl
+      command:
+        - '{python}'
+        - -m
+        - mi_reward.sim.mujoco_generalization_worker
+        - --request
+        - '{request}'
+        - --result
+        - '{result}'
+        - --width
+        - '{render_width}'
+        - --height
+        - '{render_height}'
+    - name: reference
+      output_records: logs/mi_reward/generalization_rigid_v3/data/generalization_rollouts/physical_candidates.jsonl
+      command:
+        - '{python}'
+        - -m
+        - mi_reward.data.simulator_reference_worker
+        - --request
+        - '{request}'
+        - --result
+        - '{result}'
+        - --success-refs
+        - logs/mi_reward/generalization_rigid_v3/data/manifests/generalization_rigid_v3_success_refs.jsonl
+    - name: predict
+      # Optional ablation only. It is disabled because the current Cosmos 2B
+      # outputs fail strict physical/visual consistency checks.
+      enabled: false
+      output_records: logs/mi_reward/generalization_rigid_v3/data/generalization_rollouts/predict_records.jsonl
+      command:
+        - '{python}'
+        - -m
+        - mi_reward.data.cosmos_predict_worker
+        - --request
+        - '{request}'
+        - --result
+        - '{result}'
+        - --cosmos-repo
+        - .venv/src/cosmos-predict2.5
+        - --checkpoint-root
+        - .venv/models/cosmos-predict2.5
+        - --num-candidates
+        - '{predict_candidates}'
+        - --max-mean-pixel-mae
+        - '30.0'
+        - --max-final-pixel-mae
+        - '30.0'
+        - --max-first-frame-mae
+        - '12.0'
+        - --max-motion-ratio
+        - '6.0'
+        - --max-endpoint-change-mae
+        - '25.0'
+        - --min-endpoint-change-cosine
+        - '0.10'
+        - --min-motion-support-iou
+        - '0.20'
+        - --motion-pixel-threshold
+        - '12.0'
+        - --inconsistent-policy
+        - use-physical
+    - name: transfer
+      # Domain appearance augmentation is an ablation, not a prerequisite for
+      # training the MI reward. Enable only after its checkpoint and per-node
+      # GPU memory have passed --preflight.
+      enabled: false
+      output_records: logs/mi_reward/generalization_rigid_v3/data/generalization_rollouts/rigid_v3_records.jsonl
+      command:
+        - '{python}'
+        - -m
+        - mi_reward.data.cosmos_transfer_worker
+        - --request
+        - '{request}'
+        - --result
+        - '{result}'
+        - --transfer-repo
+        - .venv/src/cosmos-transfer2.5
+        - --variants
+        - mi_reward/configs/scene_variants.yaml
+        - --num-gpus
+        - '{transfer_gpus}'
+        - --checkpoint-path
+        - .venv/models/cosmos-transfer2.5/general/depth/626e6618-bfcd-4d9a-a077-1409e2ce353f_ema_bf16.pt
+
+# Kept as a stable future integration boundary. It is deliberately disabled
+# for the current offline benchmark paper and does not affect default runs.
+real_world:
+  enabled: false
+  source: jsonl
+  input_records: null

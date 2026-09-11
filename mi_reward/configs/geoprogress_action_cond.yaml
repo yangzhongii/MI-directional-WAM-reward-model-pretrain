@@ -1,0 +1,42 @@
+# Verified GeoProgress: external action-conditioned Cosmos candidates -> LaWAM tokens -> reward potential.
+# Generic image-only Cosmos output must not be used with this configuration.
+
+paths:
+  manifest: dataset/mi_reward/manifests/cosmos_action_cond_train.jsonl
+  success_refs: dataset/mi_reward/manifests/success_refs.jsonl
+  feature_root: dataset/mi_reward/geoprogress_features
+  preference_output: dataset/mi_reward/preferences/geoprogress_train.jsonl
+  output_dir: results/mi_reward/geoprogress
+
+features:
+  feature_extractor: lawam_lam
+  lam_config_path: latent_action_model/logs/dino_large_vae/lam_release/dino_large_vae.yaml
+  lam_ckpt_path: latent_action_model/logs/dino_large_vae/lam_release/checkpoints/pytorch_model.pt
+  vision_model_id: weights/dinov3-vitb16-pretrain-lvd1689m
+  device: cuda
+  strict: true
+  tokens: true
+
+scoring:
+  mi_mode: gaussian_mi_proxy
+  gamma: 0.99
+  relation_weight: 1.0
+  token_features: true
+  margin: 0.05
+  top_k: 5
+  bottom_k: 5
+  teacher_version: geoprogress_v1
+
+training:
+  mode: geoprogress
+  batch_size: 8
+  epochs: 20
+  lr: 0.0001
+  hidden_dim: 256
+  architecture: gru
+  num_layers: 2
+  num_heads: 4
+  dropout: 0.1
+  lambda_rank: 1.0
+  lambda_potential: 1.0
+  lambda_direction: 0.5

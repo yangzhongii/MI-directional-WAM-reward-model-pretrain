@@ -1,0 +1,106 @@
+# Reward-model training configuration. Data generation is configured separately
+# in mi_reward/configs/generalization_data.yaml.
+task_suite: rigid_v1
+task_family: pick_place
+task_families: [pick_place, push_shape, peg_insertion]
+run_id: generalization_rigid_v3
+run_root: logs/mi_reward/generalization_rigid_v3
+
+data_preparation:
+  environment_root: .venv-reward
+  python: .venv-reward/bin/python
+  headless: true
+  mujoco:
+    backend: mujoco
+    gl_backend: egl
+    asset_catalog_version: rigid_v1
+  segmentation:
+    backend_config: .venv/models/segmentation.json
+    source_root: .venv/src/sam2
+    checkpoint_root: .venv/models/sam2
+  cosmos:
+    predict_source_root: .venv/src/cosmos-predict2.5
+    transfer_source_root: .venv/src/cosmos-transfer2.5
+    predict_checkpoint_root: .venv/models/cosmos-predict2.5
+    transfer_checkpoint_root: .venv/models/cosmos-transfer2.5
+    transfer_depth_checkpoint: .venv/models/cosmos-transfer2.5/general/depth/626e6618-bfcd-4d9a-a077-1409e2ce353f_ema_bf16.pt
+    predict_model: 2B/robot/action-cond
+    transfer_model: Cosmos-Transfer2.5-2B
+
+paths:
+  candidate_records: logs/mi_reward/generalization_rigid_v3/data/generalization_rollouts/physical_candidates.jsonl
+  manifest: logs/mi_reward/generalization_rigid_v3/data/manifests/generalization_rigid_v3.jsonl
+  success_refs: logs/mi_reward/generalization_rigid_v3/data/manifests/generalization_rigid_v3_success_refs.jsonl
+  feature_root: logs/mi_reward/generalization_rigid_v3/data/features
+  preferences: logs/mi_reward/generalization_rigid_v3/data/preferences/rigid_v3.jsonl
+  teacher_targets: logs/mi_reward/generalization_rigid_v3/data/preferences/rigid_v3.teacher_targets.pt
+  output_dir: logs/mi_reward/generalization_rigid_v3/results/reward_model
+  feasibility_config: mi_reward/configs/feasibility_rigid.json
+  run_report: logs/mi_reward/generalization_rigid_v3/results/run_report.json
+
+verification:
+  max_pose_step: 0.25
+  require_controls: true
+  require_scene_variant: true
+  min_accepted_candidates: 360
+  min_acceptance_rate: 0.75
+  require_scene_coverage: true
+  require_task_family_coverage: true
+  require_split_coverage: true
+
+generation:
+  num_candidates: 8
+  predict_model: 2B/robot/action-cond
+  transfer_model: Cosmos-Transfer2.5-2B
+
+features:
+  extractor: lawam_lam
+  lam_config_path: .venv/models/lawam_lam/dino_large_vae.yaml
+  lam_ckpt_path: .venv/models/lawam_lam/checkpoints/pytorch_model.pt
+  dino_checkpoint_root: .venv/models/dinov3-vitb16-pretrain-lvd1689m
+
+training:
+  # Privileged offline teacher. The deployed VisualGoalPotential does not
+  # consume action latents or relation sidecars.
+  action_weight: 1.0
+  kinematic_weight: 1.0
+  relation_weight: 1.0
+  outcome_weight: 2.0
+  pair_mode: outcome_anchored
+  # Compare only candidates generated from the same initial state, object,
+  # scene and split. This removes context shortcuts from pair supervision.
+  pair_scope: same_context
+  seed: 0
+  score_splits: [train, instance_heldout, scene_heldout, joint_heldout]
+  train_splits: [train]
+  # joint_heldout is final test only and must never select a checkpoint.
+  validation_splits: [instance_heldout, scene_heldout]
+  min_success_endpoint_gain: 0.05
+  hidden_dim: 256
+  num_heads: 8
+  batch_size: 16
+  epochs: 20
+  lr: 0.0001
+  gamma: 0.99
+  mi_backend: dame_bspline
+  preference_mi_mode: gaussian_mi_proxy
+  lambda_rank: 1.0
+  lambda_potential: 1.0
+  lambda_direction: 0.5
+  goal_dropout: 0.2
+  directional_alignment: true
+  directional_w_endpoint: 1.0
+  directional_w_positive: 0.5
+  directional_w_regression: 1.0
+  directional_w_stage: 1.0
+  directional_w_alignment: 0.1
+
+evaluation:
+  checkpoint: logs/mi_reward/generalization_rigid_v3/results/reward_model/pytorch_model.pt
+  output: logs/mi_reward/generalization_rigid_v3/results/reward_model/joint_heldout_eval.json
+  score_cache: logs/mi_reward/generalization_rigid_v3/data/preferences/rigid_v3.scores.jsonl
+  test_splits: [joint_heldout]
+  batch_size: 4
+  device: cuda
+  top_k: [1, 3]
+  strict_split_isolation: true

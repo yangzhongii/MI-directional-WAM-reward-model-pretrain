@@ -1,0 +1,75 @@
+task_family: pick_place
+instruction: pick up the task object and place it in the basket
+source_object: apple
+target_object: banana
+goal_container: basket
+scene_variants:
+  - variant_id: table_light_1
+    split: train
+    prompt: clean light-gray laboratory table with soft daylight
+    seed: 2025
+  - variant_id: table_dark_2
+    split: heldout
+    prompt: dark charcoal industrial workbench with soft overhead lighting
+    seed: 2026
+object_variants: [apple_train, banana_heldout]
+camera: global_cam
+num_candidates: 8
+planner: lawam_or_motion_plan
+simulator: mujoco
+predict_model: 2B/robot/action-cond
+transfer_enabled: false
+asset_catalog_version: rigid_v1
+simulation:
+  model_path: assets/custom_task/scene/scene_pick_apple.xml
+  initial_keyframe: home
+  camera_name: global_cam
+  mocap_body_name: ee_target
+  ee_body_name: panda_hand
+  task_object_body_name: task_object
+  goal_body_name: basket
+  gripper_actuator_name: gripper
+  hide_full_robot: true
+  kinematic_task_proxy: true
+  preserve_body_names: [table, task_object, basket]
+  object_geom_names: [task_object_geom, task_object_geom_aux1, task_object_geom_aux2, task_object_geom_aux3, task_object_geom_aux4]
+  gripper_geom_names: [left_finger_geom, right_finger_geom]
+  forbidden_geom_names: [table_geom, wall_geom]
+  require_contact_phases: [grasp, close, lift, transport, place]
+  goal_distance_threshold: 0.06
+planner:
+  steps_per_segment: 4
+  hover_height: 0.10
+  gripper_open: 1.0
+  gripper_closed: 0.0
+  candidate_jitter_xy: 0.01
+  initial_object_jitter_xy: 0.03
+  candidate_profiles:
+    - direct_success
+    - detour_success
+    - delayed_success
+    - undershoot
+    - overshoot
+    - wrong_direction
+    - failed_grasp
+    - regress_after_progress
+instances:
+  - variant_id: apple_train
+    split: train
+    source_category: apple
+    target_category: apple
+    asset_uri: builtin://pick_place/apple
+    scene_model_paths:
+      table_light_1: assets/custom_task/scene/scene_pick_apple_table_light_1.xml
+      table_dark_2: assets/custom_task/scene/scene_pick_apple_table_dark_2.xml
+    task_role: task_object
+  - variant_id: banana_heldout
+    split: heldout
+    source_category: apple
+    target_category: banana
+    asset_uri: builtin://pick_place/banana
+    model_path: assets/custom_task/scene/scene_banana.xml
+    scene_model_paths:
+      table_light_1: assets/custom_task/scene/scene_banana_table_light_1.xml
+      table_dark_2: assets/custom_task/scene/scene_banana_table_dark_2.xml
+    task_role: task_object

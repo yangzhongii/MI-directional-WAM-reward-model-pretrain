@@ -1,0 +1,28 @@
+version: 1
+model:
+  source: .venv/src/cosmos-predict2.5
+  experiment: ac_reason_embeddings_rectified_flow_2b_256_320
+  base_checkpoint: .venv/models/cosmos-predict2.5/robot/action-cond/38c6c645-7d41-4560-8eeb-6f4ddc0e6574_ema_bf16.pt
+  adapted_checkpoint: logs/world_model/cosmos_action_lora_2b_lr3e5_diag/exports/iter_000000020/model_ema_bf16.pt
+  tokenizer: .venv/models/cosmos-predict2.5/tokenizer.pth
+  empty_reason_embedding: logs/world_model/libero_dual_view/annotation/empty_reason_embedding.npy
+
+dataset:
+  root: logs/world_model/libero_dual_view
+  multiview: true
+  camera_names: [agentview, wrist]
+  resolution: [256, 320]
+  fps_downsample_ratio: 5
+  num_action_per_chunk: 12
+
+evaluation:
+  output: logs/world_model/cosmos_action_lora_2b_lr3e5_diag/validation_iter20
+  max_episodes: 8
+  guidance: 7
+  seed: 0
+  quality_gate:
+    min_psnr_gain_db: 1.0
+    min_ssim_gain: 0.02
+    max_final_mae_ratio: 0.9
+    min_endpoint_cosine_gain: 0.05
+    min_motion_iou_gain: 0.05

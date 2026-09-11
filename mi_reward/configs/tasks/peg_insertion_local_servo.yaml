@@ -1,0 +1,18 @@
+task_family: peg_insertion_local_servo
+instruction: locally align and insert the grasped peg into the matching socket
+camera: wrist_cam
+simulator: mujoco
+geometry: round
+clearance_mm: 1.0
+simulation:
+  model_path: assets/custom_task/scene/scene_peg_round_local_servo.xml
+  camera_name: wrist_cam
+  mocap_body_name: ee_target
+  ee_body_name: panda_hand
+  task_object_body_name: task_object
+  goal_body_name: insertion_hole
+  kinematic_task_proxy: false
+  contact_force_logging: true
+  clearance_mm: 1.0
+  local_servo_dof: 5
+  z_locked: true

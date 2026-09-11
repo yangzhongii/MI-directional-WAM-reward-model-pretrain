@@ -1,0 +1,169 @@
+# Self-contained visual RLPD validation for the frozen MI potential.
+# ResNet policy learning and DINO/LaWAM reward inference are intentionally
+# separate: the policy never calls a Qwen VLM and the MI model remains frozen.
+run_id: libero_mi_rlpd_joint_trend_v3
+output_root: logs/mi_reward/libero_rlpd_closed_loop
+
+runtime:
+  python: .venv-libero/bin/python
+  device: cuda
+
+benchmark:
+  variant: libero
+  suite: libero_spatial
+  task_ids: [0, 1, 2]
+  settle_steps: 10
+  max_episode_steps: 250
+  train_init_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+                       10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+                       20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+  evaluation_splits:
+    id_heldout:
+      init_indices: [30, 31, 32, 33, 34, 35, 36, 37, 38, 39]
+      appearance: none
+    layout_heldout:
+      init_indices: [40, 41, 42, 43, 44, 45, 46, 47, 48, 49]
+      appearance: none
+    appearance_heldout:
+      init_indices: [30, 31, 32, 33, 34, 35, 36, 37, 38, 39]
+      appearance: dark_warm
+
+policy:
+  # Raw RGB consumed by the trainable RLPD policy. The first view is the
+  # third-person table view and the second is the wrist camera.
+  camera_names: [agentview, robot0_eye_in_hand]
+  observation_keys: [agentview_image, robot0_eye_in_hand_image]
+  image_size: 128
+
+features:
+  # Frozen reward/value-model encoder; it is not the policy CNN.
+  extractor: lawam_lam
+  lam_config_path: .venv/models/lawam_lam/dino_large_vae.yaml
+  lam_ckpt_path: .venv/models/lawam_lam/checkpoints/pytorch_model.pt
+  dino_checkpoint_root: .venv/models/dinov3-vitb16-pretrain-lvd1689m
+  image_size: 256
+  device: cuda
+  strict: true
+
+goal:
+  mode: libero_demo_terminal
+  demo_index: 0
+
+reward:
+  # The frozen MI potential replaces Qwen VLM inference. Its windowed output
+  # uses the same positive/negative/unclear reward contract as Qwen/RLinf.
+  checkpoint: logs/mi_reward/generalization_rigid_v3/results/reward_model/pytorch_model.pt
+  # Keep dense potential shaping consistent with the downstream RLPD gamma.
+  gamma: 0.96
+  sparse_weight: 1.0
+  mi_weight: 1.0
+  clip_delta: 1.0
+  max_history: 64
+  # Qwen/RLinf reference: a synchronized 5-frame window, evaluated each step.
+  trend_history_size: 5
+  trend_input_interval: 1
+  # Cancel recurrent hidden-state warm-up measured on a repeated no-motion
+  # initial frame; otherwise an idle/random policy can receive false positives.
+  trend_baseline_horizon: 16
+  # The current distilled checkpoint uses lower corrected potential as forward
+  # progress on LIBERO. This sign is calibrated once by success-vs-random audit.
+  trend_direction: -1.0
+  # Proposal-aligned robot-grounded process latent. Online robot states are
+  # monotonically aligned to successful demonstration state trajectories.
+  # A positive visual trend is rewarded only when this stage also advances.
+  kinematic_enabled: true
+  kinematic_reference_demos: 10
+  kinematic_max_stage_step: 8
+  kinematic_initial_match_fraction: 0.2
+  kinematic_advance_margin: 0.001
+  kinematic_positive_threshold: 0.01
+  # Require the joint visual/kinematic direction to persist across two
+  # overlapping trend windows; single-frame coincidences remain unclear.
+  directional_consensus_steps: 2
+  # The distilled scalar potential needs an explicit dead band to produce the
+  # VLM's three categorical states. Tune these only from held-out reward data.
+  positive_threshold: 0.02
+  negative_threshold: -0.02
+  positive_reward: 1.0
+  negative_reward: -0.2
+  unclear_reward: 0.0
+  trend_weight: 1.0
+  # Equivalent to Qwen/RLinf gt_success_bonus; environment success remains the
+  # authoritative terminal signal in sparse_trend mode.
+  success_bonus: 20.0
+  success_threshold: 0.5
+  log_reward_steps: true
+  # Main comparison: sparse, previous dense hybrid, recommended categorical
+  # hybrid. Use --reward-mode trend for the no-success-bonus ablation.
+  modes: [sparse, sparse_mi, sparse_trend]
+
+training:
+  seeds: [0, 1, 2]
+  total_env_steps: 100000
+  random_steps: 1000
+  replay_capacity: 50000
+  demo_capacity: 20000
+  # Ten successful demonstrations are the default low-data setting.
+  max_demos: 10
+  max_demo_transitions: null
+  batch_size: 256
+  updates_per_step: 4
+  critic_actor_ratio: 4
+  eval_interval: 10000
+  checkpoint_interval: 10000
+  # WorldSample/PPL replay is opt-in. The NPZ must contain synchronized visual,
+  # proprioceptive and action transitions plus mi_labels in {-1,0,1}; image-only
+  # Cosmos rollouts are rejected by the loader.
+  ppl:
+    enabled: false
+    replay_path: logs/mi_reward/worldsample/libero_spatial/task-{task_id:02d}/synthetic_replay.npz
+    min_synthetic_ratio: 0.05
+    max_synthetic_ratio: 0.30
+    entropy_reference: 4.0
+    q_shift_tolerance: 2.0
+    q_check_interval: 100
+  rlpd:
+    hidden_dims: [256, 256]
+    visual_dim: 256
+    state_latent_dim: 64
+    spatial_features: 4
+    num_q_heads: 10
+    critic_subsample_size: 2
+    gamma: 0.96
+    tau: 0.005
+    actor_lr: 0.0003
+    critic_lr: 0.0003
+    alpha_lr: 0.0003
+    init_temperature: 0.01
+    grad_clip_norm: 10.0
+    freeze_backbone: true
+    encoder_checkpoint: .venv/models/resnet18-imagenet/resnet18-f37072fd.pth
+
+evaluation:
+  episodes_per_state: 1
+  save_videos: true
+  max_videos_per_split: 3
+
+# Mandatory quality gate before a long sparse_trend RLPD run. The audit never
+# trains a policy: it compares official success demos, random rollouts and
+# repeated no-motion observations using the frozen reward model.
+reward_audit:
+  max_demos: 5
+  random_episodes: 5
+  random_max_steps: 100
+  static_steps: 16
+  min_static_unclear_fraction: 0.95
+  max_random_positive_fraction: 0.2
+  min_success_positive_gap: 0.15
+  min_success_random_auc: 0.7
+  calibration_fraction: 0.4
+  min_positive_threshold: 0.005
+  calibrated_config: mi_reward/configs/libero_rlpd_task0_joint_pilot_calibrated.yaml
+  pilot_env_steps: 10000
+  pilot_eval_interval: 5000
+  pilot_checkpoint_interval: 5000
+
+distributed:
+  host: zhonghaoyang@172.16.0.3
+  remote_root: /mnt/public/zhonghaoyang/MI-directional-WAM-reward-model-pretrain
+  sync_remote: true

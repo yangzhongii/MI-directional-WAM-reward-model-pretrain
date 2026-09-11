@@ -1,0 +1,114 @@
+# MI Directional Potential Reward Model Training
+# ============================================
+# Run: python -m mi_reward.training.train_reward_sft --config mi_reward/configs/train_mi_reward.yaml
+
+# MI Directional Potential Reward Model Training
+# ============================================
+# All params controllable via this YAML.
+# Shell script reads cosmos.generation & preferences from here.
+# SFT params passed via CLI to train_reward_sft.
+
+run_id: peg_insertion_mi_reward
+seed: 42
+
+# ---------------------------------------------------------------------------
+# Tasks (add more for multi-task training)
+# ---------------------------------------------------------------------------
+tasks:
+  - name: peg_insertion
+    init_image: weights/start.png
+    goal_image: weights/end.png
+    prompt: >-
+      A Franka robot arm with a gripper holding a green peg,
+      moving smoothly downward to insert the green peg into a white hole.
+      Do not touch the blue base. The green peg should go cleanly into the white hole.
+
+# ---------------------------------------------------------------------------
+# World Model: Cosmos-Predict2.5
+# ---------------------------------------------------------------------------
+cosmos:
+  backend: diffusers
+
+  diffusers:
+    model_id: .venv/models/cosmos-predict2.5
+    variant: post-trained
+    enable_cpu_offload: true
+    enable_attention_slicing: true
+    num_steps: 30                       # 30 steps for clean output (no ghosting)
+
+  cli:
+    repo_path: .venv/src/cosmos-predict2.5
+    model_name: 2B/post-trained
+    gpus: 8
+    num_steps: 35
+    checkpoint_path: .venv/models/cosmos-predict2.5
+
+  generation:
+    num_candidates: 5                   # test run: 5 candidates; production: 20+
+    num_frames: 32                      # 32 frames, native resolution, ~3min/video
+    height: 256
+    width: 256
+    temperature_candidates: 1.0
+    temperature_reference: 0.3
+
+  use_mock: false
+
+# ---------------------------------------------------------------------------
+# Feature Extraction
+# ---------------------------------------------------------------------------
+features:
+  encoder: dino_v3
+  dino_v3:
+    model_path: weights/dinov3-vitb16-pretrain-lvd1689m
+    device: cuda
+    feature_dim: 768
+
+# ---------------------------------------------------------------------------
+# MI Teacher (scoring)
+# ---------------------------------------------------------------------------
+mi_teacher:
+  backend: gaussian_mi_proxy            # fast, good enough for large-scale
+  gamma: 0.99
+
+# ---------------------------------------------------------------------------
+# Preference Building
+# ---------------------------------------------------------------------------
+preferences:
+  margin: 0.0
+  top_k: 10                             # more top/bottom → more pairs
+  bottom_k: 10                          # 20 candidates → 10×10 = 100 pairs/task
+  max_pairs_per_task: null
+  pair_mode: top_vs_bottom
+  score_field: score_delta
+
+# ---------------------------------------------------------------------------
+# Reward Model Training
+# ---------------------------------------------------------------------------
+reward_model:
+  mode: distill
+  architecture: gru
+  hidden_dim: 256
+  num_layers: 2
+  num_heads: 4
+  dropout: 0.1
+
+training:
+  batch_size: 16
+  epochs: 20                            # more epochs for convergence
+  lr: 0.0001
+  device: cuda
+
+  distillation:
+    lambda_rank: 1.0
+    lambda_potential: 1.0
+    lambda_direction: 0.5
+    gamma: 0.99
+    huber_delta: 1.0
+    use_confidence_weights: true
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+deployment:
+  reward_head_type: state_potential
+  for_rlpd: true

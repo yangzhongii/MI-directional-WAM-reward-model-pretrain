@@ -1,0 +1,14 @@
+variants:
+  - variant_id: table_light_1
+    prompt: >-
+      A photorealistic robot manipulation workspace with a clean light-gray
+      table, neutral laboratory walls, soft daylight, and realistic materials.
+      Preserve the robot, task objects, camera geometry, contacts, and motion.
+    seed: 2025
+  - variant_id: table_dark_2
+    prompt: >-
+      A photorealistic robot manipulation workspace with a dark charcoal
+      workbench, industrial background, soft overhead lighting, and realistic
+      materials. Preserve the robot, task objects, camera geometry, contacts,
+      and motion.
+    seed: 2026
